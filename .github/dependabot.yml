@@ -1,0 +1,7 @@
+# Keeps the SHA-pinned actions in .github/workflows current: each update arrives as a pull request that CI checks.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

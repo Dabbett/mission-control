@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { root } from "./helpers.mjs";
 import { loadDenylist, scan, TREE_DENYLIST } from "../scripts/denylist.mjs";
@@ -15,27 +15,27 @@ const EXAMPLE_ORG = "example-org";
 const inCI = Boolean(process.env.CI);
 
 /**
- * Tracked plus untracked-but-not-ignored files. Without git (a `git archive` export) every file present was tracked,
- * including anything force-added past .gitignore, so the fallback walk skips nothing but build and OS debris.
+ * Tracked plus untracked-but-not-ignored files. In a checkout, git answers, and a git error surfaces as a failure
+ * instead of a silent fallback. Without .git (a `git archive` export) every file present was tracked, including
+ * anything force-added past .gitignore, so the walk skips nothing but build and OS debris, and never follows symlinks.
  */
 function repoFiles() {
-  try {
+  if (existsSync(join(root, ".git"))) {
     return execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd: root, encoding: "utf8" })
       .split("\0")
       .filter(Boolean)
       .filter((f) => statSync(join(root, f), { throwIfNoEntry: false })?.isFile());
-  } catch {
-    const out = [];
-    (function walk(dir) {
-      for (const name of readdirSync(dir)) {
-        if (name === "node_modules" || name === ".git" || name === ".DS_Store") continue;
-        const p = join(dir, name);
-        if (statSync(p).isDirectory()) walk(p);
-        else out.push(relative(root, p));
-      }
-    })(root);
-    return out;
   }
+  const out = [];
+  (function walk(dir) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === "node_modules" || entry.name === ".git" || entry.name === ".DS_Store" || entry.isSymbolicLink()) continue;
+      const p = join(dir, entry.name);
+      if (entry.isDirectory()) walk(p);
+      else if (entry.isFile()) out.push(relative(root, p));
+    }
+  })(root);
+  return out;
 }
 
 function strings(value, out = []) {

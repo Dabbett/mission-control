@@ -17,23 +17,23 @@ import { loadDenylist } from "./denylist.mjs";
 import { EXAMPLE, scrubFixture } from "./scrub-fixture.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const flag = flagReader(process.argv.slice(2));
-const synthetic = flag.has("--synthetic");
+const fixturesDir = join(root, "test", "fixtures");
 
-let project, out;
+let synthetic, project, out;
 try {
+  const flag = flagReader(process.argv.slice(2), { values: ["--project", "--config-dir", "--out"], switches: ["--synthetic"] });
+  synthetic = flag.has("--synthetic");
   const { dir } = resolveConfigDir({ explicit: flag("--config-dir", process.env.MC_CONFIG_DIR ?? null), root });
   const projects = loadProjects(dir);
   project = projects.get(pickProject(projects, flag("--project", process.env.MC_PROJECT ?? null)));
   const stateHome = process.env.XDG_STATE_HOME ? resolve(expandHome(process.env.XDG_STATE_HOME)) : join(homedir(), ".local", "state");
-  const defaultOut = synthetic ? join(root, "test", "fixtures", `board-${EXAMPLE.key}.json`) : join(stateHome, "mission-control", "fixtures", `board-${project.key}.json`);
+  const defaultOut = synthetic ? join(fixturesDir, `board-${EXAMPLE.key}.json`) : join(stateHome, "mission-control", "fixtures", `board-${project.key}.json`);
   out = resolve(flag("--out") ? expandHome(flag("--out")) : defaultOut);
 } catch (e) {
   console.error(`record-fixture: ${e.message}`);
   process.exit(1);
 }
 
-const fixturesDir = join(root, "test", "fixtures");
 const rel = relative(fixturesDir, out);
 const insideFixtures = rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 if (insideFixtures && !synthetic) {

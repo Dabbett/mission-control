@@ -97,7 +97,7 @@ start() {
   trap 'rmdir "$STATE/start.lock" 2>/dev/null || true' EXIT
   local node
   node="$(find_node)" || fail "Node ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR} or newer not found. Install it (fnm install ${MIN_NODE_MAJOR}) or put node on PATH."
-  if [ -f "$LOG" ] && [ "$(stat -f %z "$LOG" 2>/dev/null || echo 0)" -gt 1000000 ]; then : > "$LOG"; fi
+  if [ -f "$LOG" ] && [ "$(wc -c < "$LOG" | tr -d ' ')" -gt 1000000 ]; then : > "$LOG"; fi
   cd "$ROOT"
   local -a proj=()
   [ -z "$PROJECT" ] || proj=(--project "$PROJECT")

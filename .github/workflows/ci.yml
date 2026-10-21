@@ -4,17 +4,23 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A manual or weekly run checks the whole history (secrets and commit messages) and runs the suite on macOS too.
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"
 
 permissions:
   contents: read
 
 # Third-party actions are pinned to commit SHAs. Each comment names the tag the SHA was resolved from, checked
-# with `git ls-remote --tags` against the upstream repository (a SHA from a fork would resolve too).
+# with `git ls-remote --tags` against the upstream repository (a SHA from a fork would resolve too). Dependabot
+# (.github/dependabot.yml) proposes updates to these pins.
 jobs:
   test:
-    # Linux, although the tool is macOS-only: the suite mocks every macOS call (`open`, Ghostty) and bin/mc runs on
-    # both userlands, while GitHub's macOS runners are capacity constrained (the first run waited 15 minutes
-    # unacquired and was cancelled). A required check has to be one that actually runs.
+    # Linux, although the tool is macOS-only: the suite mocks every macOS call (`open`, Ghostty), bin/mc uses only
+    # tools both userlands share, and GitHub's macOS runners are capacity constrained (the first run waited 15
+    # minutes unacquired and was cancelled). A required check has to be one that actually runs; test-macos below
+    # exercises the macOS tools on the manual and weekly runs.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -30,16 +36,34 @@ jobs:
           # The private denylist, one pattern per line. Required: the guard fails in CI without it.
           MC_DENYLIST: ${{ secrets.MC_DENYLIST }}
       - name: commit messages and e-mail addresses of these commits are publishable
-        # A pull request checks its own commits (base..head); a push checks the commits it brought (before..sha),
-        # and a repository's first push (before = all zeros) checks its whole history.
-        run: node scripts/check-history.mjs "${{ github.event_name == 'pull_request' && format('{0}..{1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha) || format('{0}..{1}', github.event.before, github.sha) }}"
+        # A pull request checks its own commits (base..head); a push checks the commits it brought (before..sha).
+        # A first push (before = all zeros) and a manual or scheduled run (no before) check the whole history.
+        # The range reaches the script through the environment, never spliced into the command line.
+        env:
+          RANGE: ${{ github.event_name == 'pull_request' && format('{0}..{1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha) || format('{0}..{1}', github.event.before, github.sha) }}
+          MC_DENYLIST: ${{ secrets.MC_DENYLIST }}
+          # Optional repository variable: a regular expression that adds allowed e-mails (for a private working copy).
+          MC_ALLOWED_EMAILS: ${{ vars.MC_ALLOWED_EMAILS }}
+        run: node scripts/check-history.mjs "$RANGE"
+
+  test-macos:
+    # The real platform, best effort: only on manual and weekly runs, and never a required check.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm test
         env:
           MC_DENYLIST: ${{ secrets.MC_DENYLIST }}
-          # Optional repository variable: a regular expression that widens the allowed e-mails (for a private working copy).
-          MC_ALLOWED_EMAILS: ${{ vars.MC_ALLOWED_EMAILS }}
 
   secrets:
-    name: secret scan (gitleaks over the commits of this push or pull request)
+    # On push and pull_request the action scans that event's commits; on workflow_dispatch and schedule, the whole history.
+    name: secret scan (gitleaks)
     runs-on: ubuntu-latest
     permissions:
       contents: read

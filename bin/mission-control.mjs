@@ -10,10 +10,10 @@ import { fetchBoard } from "../src/github.mjs";
 import { createApp } from "../src/server.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const flag = flagReader(process.argv.slice(2));
 
-let port, config, projects, key;
+let flag, port, config, projects, key;
 try {
+  flag = flagReader(process.argv.slice(2), { values: ["--port", "--project", "--config-dir"], switches: ["--no-open"] });
   port = Number(flag("--port", process.env.MC_PORT ?? "7187"));
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("--port must be an integer between 1 and 65535");
   config = resolveConfigDir({ explicit: flag("--config-dir", process.env.MC_CONFIG_DIR ?? null), root });
