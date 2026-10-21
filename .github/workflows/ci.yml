@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Third-party actions are pinned to commit SHAs. Each comment names the tag the SHA was resolved from, checked
+# with `git ls-remote --tags` against the upstream repository (a SHA from a fork would resolve too).
+jobs:
+  test:
+    # macOS because the tool is macOS-only and bin/mc is exercised with BSD userland.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # scripts/check-history.mjs reads the pushed commits
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: tests, including the publish guard (denylist, fixture org, projects/ allowlist)
+        run: npm test
+        env:
+          # The private denylist, one pattern per line. Required: the guard fails in CI without it.
+          MC_DENYLIST: ${{ secrets.MC_DENYLIST }}
+      - name: commit messages and e-mail addresses of these commits are publishable
+        # A pull request checks its own commits (base..head); a push checks the commits it brought (before..sha),
+        # and a repository's first push (before = all zeros) checks its whole history.
+        run: node scripts/check-history.mjs "${{ github.event_name == 'pull_request' && format('{0}..{1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha) || format('{0}..{1}', github.event.before, github.sha) }}"
+        env:
+          MC_DENYLIST: ${{ secrets.MC_DENYLIST }}
+          # Optional repository variable: a regular expression that widens the allowed e-mails (for a private working copy).
+          MC_ALLOWED_EMAILS: ${{ vars.MC_ALLOWED_EMAILS }}
+
+  secrets:
+    name: secret scan (gitleaks over the commits of this push or pull request)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # the action lists a pull request's commits through the API
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      # Free for a repository under a personal account. Under an organization account this action also needs a
+      # GITLEAKS_LICENSE secret; the alternative is the gitleaks binary (`gitleaks git --log-opts=--all`).
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

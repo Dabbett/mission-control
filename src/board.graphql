@@ -1,0 +1,41 @@
+query Board($org: String!, $number: Int!, $after: String) {
+  rateLimit { cost remaining resetAt }
+  organization(login: $org) {
+    projectV2(number: $number) {
+      title url
+      items(first: 100, after: $after) {
+        totalCount
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id type
+          status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } }
+          linked: fieldValueByName(name: "Linked pull requests") {
+            ... on ProjectV2ItemFieldPullRequestValue {
+              pullRequests(first: 10) { totalCount nodes { ...PR } }
+            }
+          }
+          content {
+            __typename
+            ... on Issue {
+              number title state stateReason url updatedAt
+              issueType { name }
+              labels(first: 20) { totalCount nodes { name } }
+              assignees(first: 10) { totalCount nodes { login } }
+              parent { number }
+              subIssuesSummary { total completed }
+              subIssues(first: 100) { totalCount nodes { number } }
+              blockedBy(first: 50) { totalCount nodes { number title state url issueType { name } } }
+              closedByPullRequestsReferences(first: 10, includeClosedPrs: true) { totalCount nodes { ...PR } }
+            }
+            ... on PullRequest { ...PR }
+            ... on DraftIssue { title }
+          }
+        }
+      }
+    }
+  }
+}
+fragment PR on PullRequest {
+  number title url state isDraft
+  commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 20) { nodes { ... on CheckRun { name conclusion status } ... on StatusContext { context state } } } } } } }
+}

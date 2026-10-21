@@ -1,0 +1,188 @@
+#!/bin/bash
+# mc: start mission control in the background and open it, or stop it.
+#   mc            start if needed, then open the browser
+#   mc stop       stop the background server on this port
+#   mc status     is it running?
+#   mc log        tail the server log (method, path and status only)
+#   mc install    put `mc` on PATH (~/.local/bin) and create "MC Dashboard.app" in ~/Applications
+# Works from Finder, Raycast and the Dock too, where no shell profile has run: it finds node through fnm itself.
+# Environment: MC_PORT (default 7187), MC_PROJECT (default: the server's only project), MC_CONFIG_DIR (where the
+# project files live), MC_NO_OPEN=1 to skip the browser.
+set -euo pipefail
+
+# Finder, Raycast and the Dock start us with launchd's PATH, which lacks Homebrew (gh) and ~/.local/bin (claude).
+# Appended, so system tools stay first.
+export PATH="$PATH:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin"
+
+SELF="$0"
+if [ -L "$SELF" ]; then SELF="$(readlink "$SELF")"; fi
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/mission-control"
+PORT="${MC_PORT:-7187}"
+PROJECT="${MC_PROJECT:-}"
+URL="http://127.0.0.1:${PORT}/"
+[ -z "$PROJECT" ] || URL="${URL}?project=${PROJECT}"
+LOG="$STATE/server.log"
+MIN_NODE_MAJOR=22
+MIN_NODE_MINOR=12
+mkdir -p "$STATE"
+chmod 700 "$STATE"
+
+fail() {
+  echo "mc: $*" >&2
+  echo "$(date '+%H:%M:%S') mc: $*" >> "$LOG"
+  exit 1
+}
+
+[[ "$PORT" =~ ^[0-9]{1,5}$ ]] || fail "MC_PORT must be a port number, got: $PORT"
+[ -z "$PROJECT" ] || [[ "$PROJECT" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "MC_PROJECT must be a project key (lowercase letters, digits, dashes), got: $PROJECT"
+
+node_ok() { # usable node binary of at least MIN_NODE_MAJOR.MIN_NODE_MINOR?
+  [ -x "$1" ] || return 1
+  local v major minor
+  v="$("$1" -p 'process.versions.node' 2>/dev/null || echo 0.0)"
+  major="${v%%.*}"
+  minor="${v#*.}"
+  minor="${minor%%.*}"
+  [ "$major" -gt "$MIN_NODE_MAJOR" ] || { [ "$major" -eq "$MIN_NODE_MAJOR" ] && [ "$minor" -ge "$MIN_NODE_MINOR" ]; }
+}
+
+find_node() {
+  local n
+  n="$(command -v node 2>/dev/null || true)"
+  if [ -n "$n" ] && node_ok "$n"; then echo "$n"; return; fi
+  local fnm
+  for fnm in /opt/homebrew/bin/fnm /usr/local/bin/fnm "$HOME/.local/bin/fnm"; do
+    if [ -x "$fnm" ]; then
+      n="$("$fnm" exec --using="$(cat "$ROOT/.nvmrc" 2>/dev/null || echo "$MIN_NODE_MAJOR")" -- sh -c 'command -v node' 2>/dev/null || true)"
+      if [ -n "$n" ] && node_ok "$n"; then echo "$n"; return; fi
+    fi
+  done
+  n="$HOME/.local/share/fnm/aliases/default/bin/node"
+  if node_ok "$n"; then echo "$n"; return; fi
+  return 1
+}
+
+running() { # our server, on our port, knowing our project (any project when MC_PROJECT is unset)
+  local out
+  out="$(curl -fsS -m 2 "http://127.0.0.1:${PORT}/api/projects" 2>/dev/null || true)"
+  if [ -n "$PROJECT" ]; then [[ "$out" == *"\"key\":\"${PROJECT}\""* ]]; else [[ "$out" == *'"key":"'* ]]; fi
+}
+
+port_holder() { # prints "mc" when mission control holds the port, "other" for anything else, nothing when free
+  local pid cmd
+  pid="$(lsof -ti "tcp:${PORT}" -sTCP:LISTEN 2>/dev/null | head -n 1 || true)"
+  [ -n "$pid" ] || return 0
+  cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  if [[ "$cmd" == *"bin/mission-control.mjs"* && "$cmd" == *"--port ${PORT}"* ]]; then echo "mc $pid"; else echo "other $pid"; fi
+}
+
+start() {
+  if running; then return 0; fi
+  local holder
+  holder="$(port_holder)"
+  case "${holder%% *}" in
+    mc) fail "port ${PORT} already runs mission control for another project (mc stop, or set MC_PORT)" ;;
+    other) fail "port ${PORT} is taken by something that is not mission control (set MC_PORT)" ;;
+  esac
+  if ! mkdir "$STATE/start.lock" 2>/dev/null; then
+    # a second launch within the same moment (a double key press): wait for the first one
+    local i
+    for i in $(seq 1 25); do
+      if running; then return 0; fi
+      sleep 0.2
+    done
+    fail "another mc is starting the server and it has not come up"
+  fi
+  trap 'rmdir "$STATE/start.lock" 2>/dev/null || true' EXIT
+  local node
+  node="$(find_node)" || fail "Node ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR} or newer not found. Install it (fnm install ${MIN_NODE_MAJOR}) or put node on PATH."
+  if [ -f "$LOG" ] && [ "$(stat -f %z "$LOG" 2>/dev/null || echo 0)" -gt 1000000 ]; then : > "$LOG"; fi
+  cd "$ROOT"
+  local -a proj=()
+  [ -z "$PROJECT" ] || proj=(--project "$PROJECT")
+  # ${proj[@]+"${proj[@]}"}: bash 3.2 treats an empty array as unset under `set -u`
+  nohup "$node" bin/mission-control.mjs ${proj[@]+"${proj[@]}"} --port "$PORT" --no-open >> "$LOG" 2>&1 < /dev/null &
+  local pid=$!
+  local i
+  for i in $(seq 1 25); do
+    if running; then return 0; fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "last log lines:" >&2
+      tail -n 5 "$LOG" >&2 || true
+      fail "the server exited at startup"
+    fi
+    sleep 0.2
+  done
+  kill "$pid" 2>/dev/null || true
+  fail "the server did not answer within 5 s; it was stopped again"
+}
+
+stop() {
+  local holder pid
+  holder="$(port_holder)"
+  pid="${holder#* }"
+  case "${holder%% *}" in
+    mc)
+      kill "$pid"
+      local i
+      for i in $(seq 1 25); do
+        kill -0 "$pid" 2>/dev/null || { echo "mission control: stopped"; return 0; }
+        sleep 0.2
+      done
+      fail "sent SIGTERM to $pid but it is still running"
+      ;;
+    other) fail "port ${PORT} is held by something that is not mission control; not touching it" ;;
+    *) echo "mission control: not running" ;;
+  esac
+}
+
+install() {
+  mkdir -p "$HOME/.local/bin"
+  ln -sf "$ROOT/bin/mc" "$HOME/.local/bin/mc"
+  local app="$HOME/Applications/MC Dashboard.app"
+  mkdir -p "$app/Contents/MacOS"
+  cat > "$app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>MC Dashboard</string>
+  <key>CFBundleDisplayName</key><string>MC Dashboard</string>
+  <key>CFBundleIdentifier</key><string>local.mission-control.dashboard</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleExecutable</key><string>MC Dashboard</string>
+  <key>LSUIElement</key><true/>
+</dict></plist>
+PLIST
+  # The app has no shell environment, so the port, project and config dir in force now are baked in.
+  {
+    echo '#!/bin/bash'
+    if [ -n "$PROJECT" ]; then printf 'export MC_PORT=%q MC_PROJECT=%q\n' "$PORT" "$PROJECT"; else printf 'export MC_PORT=%q\n' "$PORT"; fi
+    if [ -n "${MC_CONFIG_DIR:-}" ]; then printf 'export MC_CONFIG_DIR=%q\n' "$MC_CONFIG_DIR"; fi
+    printf 'exec %q open\n' "$ROOT/bin/mc"
+  } > "$app/Contents/MacOS/MC Dashboard"
+  chmod +x "$app/Contents/MacOS/MC Dashboard"
+  echo "installed: ~/.local/bin/mc and $app (port $PORT, project ${PROJECT:-auto})"
+  echo "Raycast: Settings > Extensions > Script Commands > Add Directories > $ROOT/raycast, then give 'Mission Control' a hotkey."
+  echo "If the repo moves, run install again."
+}
+
+case "${1:-open}" in
+  open|start)
+    start
+    [ -n "${MC_NO_OPEN:-}" ] || open "$URL"
+    echo "mission control: $URL"
+    ;;
+  stop) stop ;;
+  status)
+    if running; then echo "mission control: running at $URL"; else echo "mission control: not running"; exit 1; fi
+    ;;
+  log) tail -n "${2:-40}" "$LOG" ;;
+  install) install ;;
+  *)
+    echo "usage: mc [open|stop|status|log|install]" >&2
+    exit 2
+    ;;
+esac

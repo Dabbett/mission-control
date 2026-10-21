@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="mc-nonce" content="{{NONCE}}">
+<meta name="color-scheme" content="dark">
+<title>Mission control</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="hud" id="hud">
+  <div class="hud-id">
+    <span class="hud-mark" aria-hidden="true"></span>
+    <h1>Mission control</h1>
+    <span class="hud-project" id="hud-project">loading</span>
+    <a class="hud-board" id="hud-board" target="_blank" rel="noopener" hidden>board ↗</a>
+    <select id="hud-switch" class="hud-switch" hidden aria-label="Project"></select>
+  </div>
+  <div class="hud-hero" id="hud-hero" aria-live="polite"></div>
+  <div class="hud-meta" id="hud-meta"></div>
+  <div class="hud-actions">
+    <button id="refresh" class="btn" type="button" title="Refresh now (r)">refresh</button>
+  </div>
+</header>
+<div class="notice" id="notice" hidden></div>
+<main id="app" class="app">
+  <p class="boot">Reading the board…</p>
+</main>
+<section id="workbench" class="workbench" aria-label="Workbench"></section>
+<aside id="panel" class="panel" hidden aria-label="Details">
+  <div class="panel-head">
+    <h2 id="panel-title"></h2>
+    <button id="panel-close" class="btn btn-ghost" type="button" title="Close (Esc)">close</button>
+  </div>
+  <div id="panel-body" class="panel-body"></div>
+</aside>
+<div id="toast" class="toast" hidden></div>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

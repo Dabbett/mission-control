@@ -1,0 +1,16 @@
+node_modules/
+.DS_Store
+*.log
+coverage/
+
+# Secrets and machine-local files never belong in this repo.
+.env*
+!.env.example
+*.local.*
+
+# Project config lives in ~/.config/mission-control/projects/. The repo ships only the example.
+projects/*.json
+!projects/example.json
+
+# Claude Code worktrees (claude -w) inside a checkout
+.claude/worktrees/

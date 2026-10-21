@@ -1,0 +1,101 @@
+{
+  "key": "example",
+  "title": "Example",
+  "org": "example-org",
+  "projectNumber": 1,
+  "repo": "example-org/example-app",
+  "localPath": "~/code/example-app",
+  "refreshSeconds": 60,
+  "status": {
+    "done": ["Done"],
+    "inReview": ["In review"],
+    "inProgress": ["In progress"],
+    "todo": ["Todo"]
+  },
+  "decisionType": "Decision",
+  "epicLabel": "epic",
+  "onHoldPattern": "^\\[On hold\\]",
+  "prompt": "Read AGENTS.md, then plan and work issue #{number} in a new worktree. Before anything else, claim it: assign yourself to #{number} and set its board Status to In progress. Follow the review loop; don't push without a passing review. Stop and ask if a decision isn't in the spec or an ADR.",
+  "command": ["claude", "-w", "issue-{number}", "--name", "#{number}", "{prompt}"],
+  "model": { "default": "opus", "labelPrefix": "model:", "allowed": ["opus", "sonnet", "fable"] },
+  "start": { "enabled": false, "terminal": "ghostty" },
+  "layers": [
+    {
+      "name": "Clients",
+      "groups": [
+        {
+          "name": "Mobile",
+          "epic": 2,
+          "phone": true,
+          "parts": [
+            { "name": "Home", "issues": [] },
+            { "name": "Browse", "issues": [20, 19] },
+            { "name": "Search", "issues": [21] },
+            { "name": "Orders", "issues": [16, 17, 18] },
+            { "name": "Account", "issues": [] },
+            { "name": "Shell and onboarding", "issues": [12] }
+          ]
+        },
+        {
+          "name": "Admin",
+          "epic": 3,
+          "parts": [
+            { "name": "Store", "issues": [6, 7, 22, 23, 24, 25, 15, 26] },
+            { "name": "Region", "issues": [] },
+            { "name": "Chain", "issues": [35, 36] },
+            { "name": "Settings", "issues": [34] },
+            { "name": "Shell", "issues": [11] }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Core",
+      "groups": [
+        {
+          "name": "Platform",
+          "epic": 1,
+          "parts": [
+            { "name": "API", "issues": [32, 33, 14] },
+            { "name": "Permissions", "issues": [5, 41, 58, 46] },
+            { "name": "Data model and storage", "issues": [10, 13] },
+            { "name": "Auth", "issues": [9] },
+            { "name": "Repo and workspace", "issues": [8] }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Features",
+      "groups": [
+        {
+          "name": "",
+          "parts": [
+            { "name": "Catalog import", "issues": [22, 13] },
+            { "name": "Search and recommendations", "issues": [21, 14, 27] },
+            { "name": "Reviews", "issues": [23, 24, 18] },
+            { "name": "Reading lists", "issues": [20] },
+            { "name": "Returns", "issues": [17, 62, 61, 44] },
+            { "name": "Inventory", "issues": [6, 35, 36, 28] },
+            { "name": "Supplier requests", "issues": [7, 33, 29] },
+            { "name": "Notifications", "issues": [15, 33] },
+            { "name": "Metrics", "issues": [25] }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Safety",
+      "groups": [
+        {
+          "name": "",
+          "parts": [
+            { "name": "CI gates and rulesets", "issues": [50, 55] },
+            { "name": "Review loop", "issues": [53, 56, 51, 52] },
+            { "name": "Access log", "issues": [59, 41] }
+          ]
+        }
+      ]
+    }
+  ]
+}

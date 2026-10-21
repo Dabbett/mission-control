@@ -1,0 +1,16 @@
+{
+  "name": "mission-control",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "description": "Live, read-only product-skeleton dashboard over a GitHub Project. Runs on 127.0.0.1 only.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "start": "node bin/mission-control.mjs",
+    "test": "node --test --test-timeout=20000",
+    "record-fixture": "node scripts/record-fixture.mjs"
+  }
+}

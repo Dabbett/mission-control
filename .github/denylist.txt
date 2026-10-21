@@ -1,0 +1,8 @@
+# Generic hygiene patterns, safe to publish: one case-insensitive JavaScript regular expression per line.
+# Machine paths and e-mail addresses never belong in this tree.
+# The names that must stay out (clients, partners, people) are NOT listed here, because listing them would
+# publish them. They live in the private denylist: the MC_DENYLIST variable (an Actions secret in CI, one
+# pattern per line) or ~/.config/mission-control/denylist.txt. scripts/denylist.mjs loads both.
+/Users/
+/home/[a-z]
+[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}
