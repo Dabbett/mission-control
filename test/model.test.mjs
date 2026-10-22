@@ -321,3 +321,29 @@ test("fixture: merged PRs show SUCCESS checks and the four PR items close nothin
   assert.equal(v.prs[0].checks, "SUCCESS");
   assert.deepEqual(sk.unsorted.prs.map((p) => p.number).sort((a, b) => a - b), [45, 47, 57, 60]);
 });
+
+// ── status names and unknown Status ─────────────────────────────────────────
+
+test("leaf: Status names match after trimming and lower-casing", () => {
+  const p = project();
+  assert.equal(state([issue(1, { status: "DONE " })], 1, p).state, LEAF.done);
+  assert.equal(state([issue(1, { status: " in Review" })], 1, p).state, LEAF.inReview);
+  assert.equal(state([issue(1, { status: "in progress" })], 1, p).state, LEAF.inProgress);
+  assert.equal(state([issue(1, { status: "todo" })], 1, p).state, LEAF.ready);
+});
+
+test("skeleton: a Status in none of the lists counts as Ready, marks the leaf, and shows as config drift", () => {
+  const p = project({ layers: [{ name: "L", groups: [{ name: "G", parts: [{ name: "P", issues: [1, 2, 3] }] }] }] });
+  const n = normalize(board([issue(1, { status: "Backlog" }), issue(2, { status: "Backlog" }), issue(3, { status: "Todo" }), issue(4, { status: null })]), p);
+  const sk = buildSkeleton(n, p);
+  const part = sk.layers[0].groups[0].parts[0];
+  assert.deepEqual(part.leaves.map((l) => [l.number, l.state, l.statusKnown]), [[1, LEAF.ready, false], [2, LEAF.ready, false], [3, LEAF.ready, true]]);
+  assert.deepEqual(sk.drift, [{ kind: "unknownStatus", name: "Backlog", count: 2 }], "one chip per unknown name, with a count; no Status at all is not drift");
+  assert.equal(issueView(n, p, 1).statusKnown, false);
+  assert.equal(issueView(n, p, 4).statusKnown, true);
+});
+
+test("leaf: onHoldPattern null turns the on-hold rule off", () => {
+  assert.equal(state([issue(1, { title: "[On hold] x" })], 1, project({ onHoldPattern: null })).state, LEAF.ready);
+  assert.equal(state([issue(1, { title: "[On hold] x" })], 1).state, LEAF.blocked, "the default pattern still applies");
+});
