@@ -25,6 +25,11 @@ test("flagReader: unknown flags, --name=value and stray words are errors that li
   assert.throws(() => flagReader(["--out", "/tmp/x", "extra"], spec), /unknown argument extra/);
 });
 
+test("flagReader: a flag given twice is an error, never a silent first-wins", () => {
+  assert.throws(() => flagReader(["--port", "1", "--port", "2"], spec), /--port given twice/);
+  assert.throws(() => flagReader(["--synthetic", "--synthetic"], spec), /--synthetic given twice/);
+});
+
 test("flagReader: asking for an undeclared flag is a programming error, not a quiet null", () => {
   const flag = flagReader([], spec);
   assert.throws(() => flag("--nope"), /not a declared value flag/);
