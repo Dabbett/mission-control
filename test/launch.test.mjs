@@ -8,8 +8,11 @@ import { root } from "./helpers.mjs";
 
 const launcher = join(root, "bin", "launch.mjs");
 
+// ANTHROPIC_API_KEY is dropped from the inherited environment, so a key in the developer's shell does not fail every case.
 function run(args, env = {}) {
-  return spawnSync(process.execPath, [launcher, ...args], { encoding: "utf8", env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  const base = { ...process.env };
+  delete base.ANTHROPIC_API_KEY;
+  return spawnSync(process.execPath, [launcher, ...args], { encoding: "utf8", env: { ...base, ...env }, stdio: ["ignore", "pipe", "pipe"] });
 }
 
 test("launch: refuses anything but claude, relative or missing cwd, and bad usage", () => {
@@ -21,6 +24,23 @@ test("launch: refuses anything but claude, relative or missing cwd, and bad usag
   assert.match(run(["--cwd", join(dir, "missing"), "--", "claude"]).stderr, /absolute existing directory/);
   assert.match(run(["--", "claude"]).stderr, /usage/);
   assert.match(run([]).stderr, /usage/);
+});
+
+test("launch: refuses flags that take the human out of the session, whatever the config said", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mc-launch-"));
+  for (const flag of ["--dangerously-skip-permissions", "--permission-mode=bypassPermissions", "--permission-mode", "-p", "--print", "--allowedTools=Bash", "--allowed-tools"]) {
+    const r = run(["--cwd", dir, "--", "claude", "-w", "issue-1", flag, "x"]);
+    assert.notEqual(r.status, 0, flag);
+    assert.match(r.stderr, new RegExp(`refusing ${flag.replace(/[-=]/g, "\\$&")}`), flag);
+  }
+});
+
+test("launch: refuses to run when ANTHROPIC_API_KEY is set, and never prints the key", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mc-launch-"));
+  const r = run(["--cwd", dir, "--", "claude"], { ANTHROPIC_API_KEY: "sk-ant-should-not-appear" });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /ANTHROPIC_API_KEY is set/);
+  assert.ok(!(r.stdout + r.stderr).includes("sk-ant-should-not-appear"));
 });
 
 test("launch: runs claude from PATH with the given cwd and argv, and passes the exit status through", () => {

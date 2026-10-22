@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { isAbsolute, join } from "node:path";
-import { createStarter } from "../src/start.mjs";
+import { createStarter, childEnv, CHILD_ENV_KEYS } from "../src/start.mjs";
 import { createApp } from "../src/server.mjs";
 import { normalize } from "../src/model.mjs";
 import { root, exampleProjects, fixtureBoard, http } from "./helpers.mjs";
 
-const projects = exampleProjects({ start: { enabled: true } });
+// The example's localPath does not exist on any machine, and Start refuses a missing checkout, so point it at this repo.
+const projects = exampleProjects({ start: { enabled: true }, localPath: root });
 const example = projects.get("example");
 const normalized = normalize(fixtureBoard(), example);
 
@@ -117,6 +118,29 @@ test("start: a failed launch reports and sets no marker", async () => {
   assert.equal(r.status, 500);
   assert.match(r.body.error, /launch failed: open: not found/);
   assert.deepEqual(s.startedFor("example"), {});
+});
+
+test("start: a missing checkout is a 409 with reason localPath, before any launch", async () => {
+  const missing = { ...example, localPath: join(root, "does-not-exist") };
+  const { s, launches } = starter();
+  const r = await s.start(missing, 6, { normalized });
+  assert.equal(r.status, 409);
+  assert.equal(r.body.reason, "localPath");
+  assert.match(r.body.error, /localPath does not exist/);
+  const file = await s.start({ ...example, localPath: join(root, "package.json") }, 6, { normalized });
+  assert.equal(file.body.reason, "localPath", "a file is not a checkout");
+  assert.equal(launches.length, 0);
+  assert.deepEqual(s.startedFor("example"), {});
+});
+
+test("start: the session gets an allowlisted environment, never the server's token or keys", async () => {
+  const env = { PATH: "/bin", HOME: "/h", TERM: "xterm", MISSION_CONTROL_TOKEN: "t", GITHUB_TOKEN: "g", ANTHROPIC_API_KEY: "k", NUM: 3 };
+  assert.deepEqual(childEnv(env), { PATH: "/bin", HOME: "/h", TERM: "xterm" });
+  for (const k of CHILD_ENV_KEYS) assert.ok(!/TOKEN|KEY|SECRET/.test(k));
+  const seen = [];
+  const { s } = starter({ launch: async (argv, opts) => void seen.push(opts) });
+  assert.equal((await s.start(example, 6, { normalized })).status, 200);
+  assert.deepEqual(seen, [{ env: childEnv() }]);
 });
 
 // ── through the server ───────────────────────────────────────────────────────

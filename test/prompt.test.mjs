@@ -25,6 +25,10 @@ test("sanitizeTitle strips control and format characters, collapses whitespace, 
   assert.equal(sanitizeTitle("Bidi ‮override and zero​width and \u0000nul"), "Bidi override and zerowidth and nul");
   assert.equal(sanitizeTitle("  a \n\t b  "), "a b");
   assert.equal(sanitizeTitle("x".repeat(300)).length, TITLE_CAP);
+  const emoji = sanitizeTitle("x".repeat(TITLE_CAP - 1) + "🚀🚀");
+  assert.equal(Array.from(emoji).length, TITLE_CAP);
+  assert.ok(emoji.endsWith("🚀"), "the cap counts code points, so the emoji is kept whole");
+  assert.ok(emoji.isWellFormed(), "no half emoji (lone surrogate) left behind");
   assert.equal(sanitizeTitle(null), "");
   assert.equal(sanitizeTitle(`keeps "quotes" and 'ticks' and \`backticks\``), `keeps "quotes" and 'ticks' and \`backticks\``);
 });
