@@ -37,6 +37,8 @@ test("allowedEmailTest: GitHub noreply and generic no-reply senders pass; MC_ALL
   const plain = allowedEmailTest();
   assert.ok(plain(NOREPLY_ADDRESS));
   assert.ok(plain(addr("noreply", "github.com")));
+  assert.ok(plain(addr("support", "github.com")), "GitHub's own domain: bots sign off with it");
+  assert.ok(!plain(addr("someone", "github.com.example")), "the domain match is anchored");
   assert.ok(plain(addr("no-reply", "anthropic.com")));
   assert.ok(!plain(COMPANY));
   const widened = allowedEmailTest("@company\\.example$");
