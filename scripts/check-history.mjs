@@ -6,8 +6,10 @@
 //   generic no-reply senders by default, plus whatever MC_ALLOWED_EMAILS (a regular expression) adds. It widens
 //   the rule, never replaces it;
 // - the domain of every address, allowed or not, is scanned against the denylist as well, so a name hidden in a
-//   domain (an author at a client's no-reply address, say) still fails. Inside a message an allowed address is
-//   masked to `<allowed>@domain` before the scan: the local part is a login or "noreply", the domain is checked.
+//   domain (an author at a client's no-reply address, say) still fails. This also applies to an address that
+//   MC_ALLOWED_EMAILS allows. Inside a message an allowed address is masked to `<allowed>@domain` before the scan:
+//   the domain is checked; the local part (a GitHub login or "noreply") is deliberately not, because a login is a
+//   public GitHub identity, and that holds for a co-author's login as much as for the publishing account's.
 // Author and committer names are not scanned: they are the publishing GitHub account, public by construction.
 // Usage: node scripts/check-history.mjs [<rev-range>]     default: the last commit (HEAD)
 // A range with an all-zeros or empty left side (a repository's first push; a manual or scheduled run) checks every
@@ -20,7 +22,11 @@ import { loadDenylist, scan } from "./denylist.mjs";
 
 export const NOREPLY = /@users\.noreply\.github\.com$|^(noreply|support|actions)@github\.com$|^no-?reply@/i;
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
-const domainOf = (email) => email.split("@")[1] ?? "";
+/** Everything after the first @, so a second @ (git validates nothing) lands in the scanned part. */
+const domainOf = (email) => {
+  const at = email.indexOf("@");
+  return at === -1 ? "" : email.slice(at + 1);
+};
 
 /** The allowed-e-mail test: NOREPLY, widened by `extra` (a regular expression source) when given. */
 export function allowedEmailTest(extra = null) {
@@ -47,19 +53,23 @@ export function revArgsFor(arg = "HEAD") {
  * @returns {{ commits: number, problems: string[] }}
  */
 export function checkHistory({ repo, range = "HEAD", patterns, isAllowedEmail }) {
-  const git = (...args) => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const MAX_OUTPUT = 256 * 1024 * 1024; // a whole history's messages in one call; Node's default cap is 1 MB
+  const git = (...args) => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: MAX_OUTPUT });
   let log;
   try {
-    // One call for every commit: records separated by NUL, fields by the unit separator.
-    log = git("log", "-z", "--format=%H%x1f%ae%x1f%ce%x1f%B", ...revArgsFor(range));
+    // One call for every commit: records separated by NUL, fields by the unit separator. No signature output in front.
+    log = git("log", "-z", "--no-show-signature", "--format=%H%x1f%ae%x1f%ce%x1f%B", ...revArgsFor(range));
   } catch (e) {
+    if (e.code === "ENOBUFS") throw new Error(`the commit messages of "${range}" exceed ${MAX_OUTPUT / 1024 / 1024} MB; check a narrower range`);
     const reason = String(e.stderr ?? e.message).split("\n")[0];
-    throw new Error(`cannot list the commits of "${range}": ${reason}. After a force-push the old tip is unreachable; run the workflow manually, which checks the whole history.`);
+    throw new Error(`cannot list the commits of "${range}": ${reason}. After a force-push the old tip is unreachable; run the workflow manually, which checks the whole history (locally: pass ..HEAD).`);
   }
   const records = log.split("\0").filter((r) => r.trim());
   const problems = [];
   for (const record of records) {
-    const [sha, authorEmail = "", committerEmail = "", body = ""] = record.split("\x1f");
+    // A unit separator inside a message must not cut the message short, so the body is everything after field three.
+    const [sha, authorEmail = "", committerEmail = "", ...rest] = record.split("\x1f");
+    const body = rest.join("\x1f");
     const short = sha.slice(0, 7);
     for (const [who, email] of [["author", authorEmail], ["committer", committerEmail]]) {
       if (!isAllowedEmail(email)) problems.push(`${short}: ${who} e-mail is not an allowed (noreply) address`);

@@ -5,7 +5,7 @@ Read this before changing anything. `README.md` explains what the tool does; thi
 ## Run and test
 
 - Node 22 (`.nvmrc`), no dependencies. `npm test` runs everything offline and must pass before a push.
-- CI is written for the published repository: it needs the `MC_DENYLIST` secret, set twice (as an Actions secret and as a Dependabot secret, because Dependabot's runs see only the latter), and noreply commit e-mails. A private working copy that commits with other e-mails can set the `MC_ALLOWED_EMAILS` repository variable (a regular expression) to allow those addresses as well.
+- CI is written for the published repository: it needs the `MC_DENYLIST` secret, set twice (as an Actions secret and as a Dependabot secret, because Dependabot's runs see only the latter), and noreply commit e-mails. A private working copy that commits with other e-mails can set the `MC_ALLOWED_EMAILS` repository variable (a regular expression) to allow those addresses as well; an address allowed that way still fails if its domain is on the denylist.
 - `node bin/mission-control.mjs --no-open` starts the server on `127.0.0.1:7187`.
 
 ## Rules that hold
