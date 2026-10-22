@@ -5,6 +5,9 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { DANGEROUS_FLAGS } from "./claude-flags.mjs";
+import { normStatus, STATUS_GROUPS } from "./status.mjs";
+
+export { normStatus, STATUS_GROUPS };
 
 export function expandHome(p, home = homedir()) {
   if (p === "~") return home;
@@ -16,18 +19,17 @@ const KEY_RE = /^[a-z0-9][a-z0-9-]*$/;
 const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const MODEL_RE = /^[a-z0-9][a-z0-9.-]*$/;
 const KNOWN_KEYS = ["key", "title", "org", "projectNumber", "repo", "localPath", "refreshSeconds", "status", "decisionType", "epicLabel", "onHoldPattern", "prompt", "command", "start", "model", "layers"];
-export const STATUS_GROUPS = ["done", "inReview", "inProgress", "todo"];
+const START_KEYS = ["enabled", "terminal"];
+const MODEL_KEYS = ["default", "allowed", "labelPrefix"];
+const LAYER_KEYS = ["name", "groups"];
+const GROUP_KEYS = ["name", "epic", "phone", "parts"];
+const PART_KEYS = ["name", "issues"];
 // Shapes of the tokens people are most likely to paste: Anthropic keys, GitHub tokens and fine-grained PATs.
 const SECRET_RE = /\b(sk-ant-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,})/;
 const LINE_BREAK = /[\r\n]/;
 
 function fail(source, msg) {
   throw new Error(`${source}: ${msg}`);
-}
-
-/** Status option names are compared after trimming and lower-casing, so "In Progress" and "In progress" match. */
-export function normStatus(name) {
-  return typeof name === "string" ? name.trim().toLowerCase() : "";
 }
 
 /** The path of the first string value that looks like a token, or null. The value itself is never reported. */
@@ -45,6 +47,12 @@ function findSecret(value, path = "") {
     }
   }
   return null;
+}
+
+/** Refuse keys outside `known` at `where`, so a typo such as start.enable fails instead of quietly meaning false. */
+function checkKeys(obj, known, where, source) {
+  const unknown = Object.keys(obj).filter((k) => !known.includes(k));
+  if (unknown.length) fail(source, `unknown key${unknown.length > 1 ? "s" : ""} ${unknown.map((k) => `${where}.${k}`).join(", ")}; known keys there: ${known.join(", ")}`);
 }
 
 function duplicate(names) {
@@ -96,6 +104,7 @@ export function validateProject(raw, source = "project") {
 
   const st = raw.status;
   if (!st || typeof st !== "object") fail(source, "status mapping is required");
+  checkKeys(st, STATUS_GROUPS, "status", source);
   for (const k of STATUS_GROUPS) {
     if (!stringArray(st[k])) fail(source, `status.${k} must be an array of option names`);
   }
@@ -141,6 +150,7 @@ export function validateProject(raw, source = "project") {
 
   const start = raw.start ?? {};
   if (!start || typeof start !== "object") fail(source, "start must be an object");
+  checkKeys(start, START_KEYS, "start", source);
   p.start = { enabled: start.enabled === true, terminal: start.terminal ?? "ghostty" };
   if (p.start.terminal !== "ghostty") fail(source, `start.terminal "${p.start.terminal}" is not supported`);
   if (p.start.enabled && p.command[0] !== "claude") fail(source, 'start.enabled needs command[0] to be "claude"; the launcher runs nothing else');
@@ -155,6 +165,7 @@ export function validateProject(raw, source = "project") {
   if (raw.model !== undefined) {
     const m = raw.model;
     if (!m || typeof m !== "object") fail(source, "model must be an object");
+    checkKeys(m, MODEL_KEYS, "model", source);
     if (p.command[0] !== "claude") fail(source, 'model needs command[0] to be "claude"');
     if (p.command.some((a) => a === "--model" || a.startsWith("--model="))) fail(source, "model and a --model in command conflict; keep one");
     if (!stringArray(m.allowed) || m.allowed.length === 0) fail(source, "model.allowed must be a non-empty array of model names");
@@ -169,11 +180,14 @@ export function validateProject(raw, source = "project") {
   if (!Array.isArray(raw.layers)) fail(source, "layers must be an array");
   const epics = new Set();
   p.layers = raw.layers.map((layer, li) => {
-    if (typeof layer?.name !== "string" || !layer.name) fail(source, `layers[${li}].name is required`);
+    if (!layer || typeof layer !== "object") fail(source, `layers[${li}] must be an object`);
+    checkKeys(layer, LAYER_KEYS, `layers[${li}]`, source);
+    if (typeof layer.name !== "string" || !layer.name) fail(source, `layers[${li}].name is required`);
     if (!Array.isArray(layer.groups)) fail(source, `layers[${li}].groups must be an array`);
     const groups = layer.groups.map((g, gi) => {
       const where = `layers[${li}].groups[${gi}]`;
       if (!g || typeof g !== "object") fail(source, `${where} must be an object`);
+      checkKeys(g, GROUP_KEYS, where, source);
       const group = { name: typeof g.name === "string" ? g.name : "", epic: null, phone: g.phone === true, parts: [] };
       if (g.epic !== undefined) {
         if (!isPositiveInt(g.epic)) fail(source, `${where}.epic must be a positive integer`);
@@ -182,7 +196,9 @@ export function validateProject(raw, source = "project") {
       }
       if (!Array.isArray(g.parts)) fail(source, `${where}.parts must be an array`);
       group.parts = g.parts.map((part, pi) => {
-        if (typeof part?.name !== "string" || !part.name) fail(source, `${where}.parts[${pi}].name is required`);
+        if (!part || typeof part !== "object") fail(source, `${where}.parts[${pi}] must be an object`);
+        checkKeys(part, PART_KEYS, `${where}.parts[${pi}]`, source);
+        if (typeof part.name !== "string" || !part.name) fail(source, `${where}.parts[${pi}].name is required`);
         const issues = part.issues ?? [];
         if (!Array.isArray(issues) || !issues.every(isPositiveInt)) fail(source, `${where}.parts[${pi}].issues must be positive integers`);
         return { name: part.name, issues: [...new Set(issues)] };
@@ -197,13 +213,18 @@ export function validateProject(raw, source = "project") {
   for (const layer of p.layers) {
     const dupGroup = duplicate(layer.groups.map((g) => g.name).filter(Boolean));
     if (dupGroup) fail(source, `two groups in ${layer.name} are named "${dupGroup}"`);
-    for (const g of layer.groups) {
-      const dupPart = duplicate(g.parts.map((part) => part.name));
-      if (dupPart) fail(source, `two parts in ${layer.name}${g.name ? " / " + g.name : ""} are named "${dupPart}"`);
-    }
+    // Checked as whole paths across the layer, built as buildSkeleton builds them: two unnamed groups that each
+    // hold a part "P" would both be "L / P".
+    const dupPath = duplicate(layer.groups.flatMap((g) => g.parts.map((part) => partPath(layer.name, g.name, part.name))));
+    if (dupPath) fail(source, `two parts have the path "${dupPath}"; rename one, or name their groups`);
   }
   p.epics = [...epics];
   return p;
+}
+
+/** A part's path on the page; src/model.mjs builds the same string. */
+export function partPath(layer, group, part) {
+  return `${layer} / ${group ? group + " / " : ""}${part}`;
 }
 
 /** Load every *.json file in the config dir into a Map keyed by project key, in file-name order. */

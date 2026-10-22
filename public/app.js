@@ -13,6 +13,7 @@ const startErrors = new Map(); // issue number -> why its last Start was refused
 let restarted = false; // the server restarted since this page loaded, so the page's nonce is dead
 let failure = null; // { kind: "unreachable" | "noData", msg } from the last load, or null
 let receivedAt = 0; // Date.now() when `board` arrived, so its age keeps counting while the server is silent
+let shownNotice = null; // the notice text on screen; redrawn only when it changes, so the alert is not re-announced
 const DRAG_TYPE = "application/x-mc-issue";
 const MANY_STARTED = 2; // at this many issues started in one server run, or more, the Workbench warns
 
@@ -143,7 +144,8 @@ function ageText(b) {
 /** Start is off while the page cannot trust what it shows: an old board, a silent server, or a dead nonce. */
 function startBlocked() {
   if (restarted) return "Mission control restarted; reload the page to Start.";
-  if (failure) return "The server is not answering; Start is off until it does.";
+  if (failure?.kind === "unreachable") return "The server is not answering; Start is off until it does.";
+  if (failure) return "The server has no board data; Start is off until it does.";
   if (board?.stale) return "The board is stale; Start is off until a fetch succeeds.";
   return null;
 }
@@ -192,7 +194,7 @@ function renderBands(b) {
       const text =
         d.kind === "missing" ? `config names #${d.number} (${d.part}) but it is not on the board`
         : d.kind === "unclaimed" ? `#${d.number}, a child of epic #${d.epic}, is claimed by no part`
-        : d.kind === "unknownStatus" ? `Status "${d.name}" on ${d.count} item${d.count > 1 ? "s" : ""} is in none of the config's status lists, so they count as Ready`
+        : d.kind === "unknownStatus" ? `Status "${d.name}" on ${d.count} item${d.count > 1 ? "s" : ""} is in none of the config's status lists: they show as Ready, but Start refuses them until the config names it`
         : `epic #${d.number} is not on the board`;
       strip.append(chip(`config drift: ${text}`, "warn"));
     }
@@ -359,6 +361,7 @@ function stagedCard(number, b) {
   box.append(el("div", { class: "line" }, el("span", { class: "num", text: `#${number}` }), el("span", { class: "title" }, l ? github(l.title, l.url) : "no longer on the board")));
   // The board can change while a card waits here. Start re-checks on the server too; this says so early.
   const ready = l && l.state === "ready" && l.copy;
+  const unlisted = ready && l.statusKnown === false; // shown as Ready, but the server refuses to Start it
   if (!ready) {
     const why = !l ? "It left the board or its part." : l.state !== "ready" ? `Now ${LABEL[l.state]}${l.reason ? `: ${l.reason}` : ""}.` : `No command: ${l.commandError}.`;
     box.append(el("div", { class: "reason", text: `${why} It can't start until the board says Ready again.` }));
@@ -370,7 +373,8 @@ function stagedCard(number, b) {
   if (startErrors.has(number)) box.append(el("div", { class: "reason start-error", text: `Last Start refused: ${startErrors.get(number)}` }));
   const actions = el("div", { class: "actions" });
   if (ready && l.model) actions.append(chip(`model ${l.model}${l.modelSource === "label" ? " (label)" : ""}`, "muted"));
-  if (ready && b.start?.enabled) {
+  if (unlisted) box.append(el("div", { class: "reason", text: `Its Status "${l.status}" is in none of the config's status lists, so Start is off for it. Add the Status to the config, or copy the prompt.` }));
+  if (ready && b.start?.enabled && !unlisted) {
     // The label names every reason a confirm is needed, from board data, and a click confirms exactly
     // those reasons. One the page hasn't seen yet comes back as a 409; the reload then adds it here.
     const startedAt = b.start.started?.[number];
@@ -473,6 +477,7 @@ async function copyLine(line) {
 
 async function startIssue(number, button, confirm = {}) {
   button.disabled = true;
+  startErrors.delete(number); // a new press replaces the old refusal, whatever this one ends in
   const asked = projectKey;
   try {
     const res = await fetch("/api/start", {
@@ -513,12 +518,14 @@ async function startIssue(number, button, confirm = {}) {
  *  no ticking numbers: the board's age lives in the HUD. */
 function renderNotice() {
   const n = document.getElementById("notice");
-  clear(n);
   let msg = null;
   if (restarted) msg = "Mission control restarted since this page loaded, so Start needs a fresh page. Reloading empties the Workbench.";
   else if (failure?.kind === "unreachable") msg = `The local server is not answering (${failure.msg}). Is mission control still running? It is tried again every ${board?.refreshSeconds ?? 60} s.`;
   else if (failure) msg = `No board data: ${failure.msg}`;
   else if (board?.stale) msg = `GitHub could not be read (${board.error}), so this is the last board read; its age is at the top right. Start is off until a fetch succeeds.`;
+  if (msg === shownNotice) return;
+  shownNotice = msg;
+  clear(n);
   n.hidden = !msg;
   if (!msg) return;
   n.append(el("span", { text: msg }));

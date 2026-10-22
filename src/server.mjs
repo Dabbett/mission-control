@@ -45,6 +45,8 @@ function json(res, status, obj) {
  * @param {() => number} [deps.now]
  * @param {(line: string) => void} [deps.log]
  * @param {object} [deps.starter]   { start(project, number, opts) } from start.mjs; absent = Start disabled everywhere
+ * @param {{ requestMs?: number, headersMs?: number, checkEveryMs?: number }} [deps.timeouts]   test seam; Node checks
+ *   for overdue requests only every checkEveryMs (its default is 30 s), so a test shortens all three
  */
 export function createApp(deps) {
   const { projects, fetchBoard } = deps;
@@ -208,7 +210,8 @@ export function createApp(deps) {
     return json(res, result.status, result.body);
   }
 
-  const server = createServer(async (req, res) => {
+  const timeouts = deps.timeouts ?? {};
+  const server = createServer({ connectionsCheckingInterval: timeouts.checkEveryMs ?? 30_000 }, async (req, res) => {
     const port = server.address()?.port;
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     const done = (status) => log(`${req.method} ${url.pathname} ${status}`);
@@ -264,8 +267,8 @@ export function createApp(deps) {
       log(`${req.method} ${url.pathname} 500 ${e?.name ?? "Error"}`);
     }
   });
-  server.requestTimeout = REQUEST_TIMEOUT_MS;
-  server.headersTimeout = HEADERS_TIMEOUT_MS;
+  server.requestTimeout = timeouts.requestMs ?? REQUEST_TIMEOUT_MS;
+  server.headersTimeout = timeouts.headersMs ?? HEADERS_TIMEOUT_MS;
 
   function listen(port = 0) {
     return new Promise((resolve, reject) => {

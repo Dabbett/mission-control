@@ -178,12 +178,25 @@ test("validation: a Status name in two lists, and duplicate layer, group or part
   assert.throws(() => validateProject(base({ status: { done: [" "], inReview: [], inProgress: [], todo: [] } })), /status\.done has an empty option name/);
   assert.throws(() => validateProject(base({ layers: [{ name: "L", groups: [] }, { name: "L", groups: [] }] })), /two layers are named "L"/);
   assert.throws(() => validateProject(base({ layers: [{ name: "L", groups: [{ name: "G", parts: [] }, { name: "G", parts: [] }] }] })), /two groups in L are named "G"/);
-  assert.throws(() => validateProject(base({ layers: [{ name: "L", groups: [{ name: "G", parts: [{ name: "P", issues: [1] }, { name: "P", issues: [2] }] }] }] })), /two parts in L \/ G are named "P"/);
+  assert.throws(() => validateProject(base({ layers: [{ name: "L", groups: [{ name: "G", parts: [{ name: "P", issues: [1] }, { name: "P", issues: [2] }] }] }] })), /two parts have the path "L \/ G \/ P"/);
   assert.doesNotThrow(() => validateProject(base({ layers: [{ name: "L", groups: [{ name: "", parts: [{ name: "P" }] }, { name: "", parts: [{ name: "Q" }] }] }] })), "unnamed groups may repeat");
+  assert.throws(() => validateProject(base({ layers: [{ name: "L", groups: [{ name: "", parts: [{ name: "P" }] }, { name: "", parts: [{ name: "P" }] }] }] })), /two parts have the path "L \/ P"/, "but not with the same part path");
+  assert.doesNotThrow(() => validateProject(base({ layers: [{ name: "L", groups: [{ name: "A", parts: [{ name: "P" }] }, { name: "B", parts: [{ name: "P" }] }] }] })), "named groups keep the paths apart");
+});
+
+test("validation: unknown keys inside status, start, model, layers, groups and parts are refused by path", () => {
+  const layers = (extra = {}) => [{ name: "L", groups: [{ name: "G", parts: [{ name: "P", issues: [1], ...extra.part }], ...extra.group }], ...extra.layer }];
+  assert.throws(() => validateProject(base({ start: { enable: true } })), /unknown key start\.enable; known keys there: enabled, terminal/);
+  assert.throws(() => validateProject(base({ status: { done: [], inReview: [], inProgress: [], todo: [], inreview: [] } })), /unknown key status\.inreview/);
+  assert.throws(() => validateProject(base({ command: ["claude", "{prompt}"], model: { allowed: ["opus"], defualt: "opus" } })), /unknown key model\.defualt/);
+  assert.throws(() => validateProject(base({ layers: layers({ layer: { grups: [] } }) })), /unknown key layers\[0\]\.grups/);
+  assert.throws(() => validateProject(base({ layers: layers({ group: { phones: true } }) })), /unknown key layers\[0\]\.groups\[0\]\.phones/);
+  assert.throws(() => validateProject(base({ layers: layers({ part: { issue: [2] } }) })), /unknown key layers\[0\]\.groups\[0\]\.parts\[0\]\.issue/);
+  assert.doesNotThrow(() => validateProject(base({ start: { enabled: false, terminal: "ghostty" }, command: ["claude", "{prompt}"], model: { allowed: ["opus"], default: "opus", labelPrefix: "model:" }, layers: [{ name: "L", groups: [{ name: "G", epic: 1, phone: true, parts: [{ name: "P", issues: [2] }] }] }] })), "every key the loader reads is known");
 });
 
 test("validation: with Start on, flags that take the human out of the session are refused; with Start off, Copy stays free", () => {
-  for (const flag of ["--dangerously-skip-permissions", "--permission-mode", "--permission-mode=bypassPermissions", "-p", "--print", "--allowedTools", "--allowedTools=Bash"]) {
+  for (const flag of ["--dangerously-skip-permissions", "--permission-mode", "--permission-mode=bypassPermissions", "-p", "--print", "--allowedTools", "--allowedTools=Bash", "--settings", "--settings={}", "--setting-sources", "--setting-sources=project"]) {
     assert.throws(() => validateProject(base({ start: { enabled: true }, command: ["claude", flag, "{prompt}"] })), /takes the human out of the session/, flag);
     assert.doesNotThrow(() => validateProject(base({ command: ["claude", flag, "{prompt}"] })), `${flag} with Start off`);
   }
