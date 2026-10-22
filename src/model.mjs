@@ -205,6 +205,11 @@ function uniqueByNumber(leaves) {
   return [...seen.values()];
 }
 
+/** A part's path on the page: the drill-in reopens by it, and the validator refuses two parts with the same one. */
+export function partPath(layer, group, part) {
+  return `${layer} / ${group ? group + " / " : ""}${part}`;
+}
+
 /** Everything the page needs, computed from normalized data and the project config. */
 export function buildSkeleton(normalized, project) {
   const { items } = normalized;
@@ -220,7 +225,7 @@ export function buildSkeleton(normalized, project) {
     name: layer.name,
     groups: layer.groups.map((group) => {
       const parts = group.parts.map((part) => {
-        const where = `${layer.name} / ${group.name ? group.name + " / " : ""}${part.name}`; // = partPath() in config.mjs
+        const where = partPath(layer.name, group.name, part.name);
         const leaves = [];
         const decisions = [];
         for (const n of part.issues) {
