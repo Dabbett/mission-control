@@ -2,13 +2,13 @@
 
 export const TITLE_CAP = 120;
 
-/** Strip control and format characters (bidi overrides, zero-width), collapse whitespace, cap length. */
+/** Strip control and format characters (bidi overrides, zero-width), collapse whitespace, cap length in code points, so an emoji is never cut in half. */
 export function sanitizeTitle(s) {
-  return String(s ?? "")
+  const clean = String(s ?? "")
     .replace(/[\p{Cc}\p{Cf}]/gu, "")
     .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, TITLE_CAP);
+    .trim();
+  return Array.from(clean).slice(0, TITLE_CAP).join("");
 }
 
 /** Replace {name} placeholders that exist in vars; unknown placeholders are left as written. */
