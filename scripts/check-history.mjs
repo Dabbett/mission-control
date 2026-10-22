@@ -2,9 +2,12 @@
 // Commit messages and e-mail addresses must stay publishable. The tree guard (test/publish-guard.test.mjs)
 // cannot see them, so CI runs this over the commits of each push or pull request:
 // - messages must match no denylist pattern (scripts/denylist.mjs);
-// - author and committer e-mail addresses must be allowed: GitHub noreply addresses, GitHub's own domain (bots sign
-//   off with a support address there) and generic no-reply senders by default, plus whatever MC_ALLOWED_EMAILS (a
-//   regular expression) adds. It widens the rule, never replaces it.
+// - author and committer e-mail addresses must be allowed: GitHub noreply addresses, GitHub's own bot senders and
+//   generic no-reply senders by default, plus whatever MC_ALLOWED_EMAILS (a regular expression) adds. It widens
+//   the rule, never replaces it;
+// - the domain of every address, allowed or not, is scanned against the denylist as well, so a name hidden in a
+//   domain (an author at a client's no-reply address, say) still fails. Inside a message an allowed address is
+//   masked to `<allowed>@domain` before the scan: the local part is a login or "noreply", the domain is checked.
 // Author and committer names are not scanned: they are the publishing GitHub account, public by construction.
 // Usage: node scripts/check-history.mjs [<rev-range>]     default: the last commit (HEAD)
 // A range with an all-zeros or empty left side (a repository's first push; a manual or scheduled run) checks every
@@ -15,12 +18,20 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadDenylist, scan } from "./denylist.mjs";
 
-export const NOREPLY = /@users\.noreply\.github\.com$|@github\.com$|^no-?reply@/i;
+export const NOREPLY = /@users\.noreply\.github\.com$|^(noreply|support|actions)@github\.com$|^no-?reply@/i;
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+const domainOf = (email) => email.split("@")[1] ?? "";
 
 /** The allowed-e-mail test: NOREPLY, widened by `extra` (a regular expression source) when given. */
 export function allowedEmailTest(extra = null) {
-  const more = extra ? new RegExp(extra, "i") : null;
+  let more = null;
+  if (extra) {
+    try {
+      more = new RegExp(extra, "i");
+    } catch {
+      throw new Error("MC_ALLOWED_EMAILS is not a valid regular expression"); // never echo it: the variable is not masked in logs
+    }
+  }
   return (email) => NOREPLY.test(email) || (more !== null && more.test(email));
 }
 
@@ -37,26 +48,27 @@ export function revArgsFor(arg = "HEAD") {
  */
 export function checkHistory({ repo, range = "HEAD", patterns, isAllowedEmail }) {
   const git = (...args) => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  let shas;
+  let log;
   try {
-    shas = git("rev-list", ...revArgsFor(range)).split("\n").filter(Boolean);
+    // One call for every commit: records separated by NUL, fields by the unit separator.
+    log = git("log", "-z", "--format=%H%x1f%ae%x1f%ce%x1f%B", ...revArgsFor(range));
   } catch (e) {
     const reason = String(e.stderr ?? e.message).split("\n")[0];
-    throw new Error(`cannot list the commits of "${range}": ${reason}. After a force-push the old tip may be unreachable; pass an explicit range.`);
+    throw new Error(`cannot list the commits of "${range}": ${reason}. After a force-push the old tip is unreachable; run the workflow manually, which checks the whole history.`);
   }
+  const records = log.split("\0").filter((r) => r.trim());
   const problems = [];
-  for (const sha of shas) {
+  for (const record of records) {
+    const [sha, authorEmail = "", committerEmail = "", body = ""] = record.split("\x1f");
     const short = sha.slice(0, 7);
-    const [authorEmail, committerEmail] = git("show", "-s", "--format=%ae%n%ce", sha).split("\n");
     for (const [who, email] of [["author", authorEmail], ["committer", committerEmail]]) {
       if (!isAllowedEmail(email)) problems.push(`${short}: ${who} e-mail is not an allowed (noreply) address`);
+      for (const h of scan(domainOf(email), patterns)) problems.push(`${short}: ${who} e-mail domain matches denylist pattern #${h.pattern}`);
     }
-    // An allowed address inside the message (a Co-Authored-By trailer) is masked whole before the scan: its local
-    // part is a GitHub login or "noreply", public by construction, so it is not a leak.
-    const message = git("show", "-s", "--format=%B", sha).replace(EMAIL_RE, (m) => (isAllowedEmail(m) ? "<allowed e-mail>" : m));
+    const message = body.replace(EMAIL_RE, (m) => (isAllowedEmail(m) ? `<allowed>@${domainOf(m)}` : m));
     for (const h of scan(message, patterns)) problems.push(`${short}: message line ${h.line} matches denylist pattern #${h.pattern}`);
   }
-  return { commits: shas.length, problems };
+  return { commits: records.length, problems };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

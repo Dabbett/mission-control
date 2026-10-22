@@ -1,4 +1,5 @@
 # Keeps the SHA-pinned actions in .github/workflows current: each update arrives as a pull request that CI checks.
+# Dependabot's runs see Dependabot secrets only, so MC_DENYLIST must also be set under Settings > Secrets > Dependabot.
 version: 2
 updates:
   - package-ecosystem: github-actions
