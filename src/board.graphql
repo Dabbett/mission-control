@@ -1,8 +1,10 @@
 query Board($org: String!, $number: Int!, $after: String) {
   rateLimit { cost remaining resetAt }
+  viewer { id login }
   organization(login: $org) {
     projectV2(number: $number) {
-      title url
+      id title url
+      statusField: field(name: "Status") { ... on ProjectV2SingleSelectField { id options { id name } } }
       items(first: 100, after: $after) {
         totalCount
         pageInfo { hasNextPage endCursor }
@@ -17,7 +19,7 @@ query Board($org: String!, $number: Int!, $after: String) {
           content {
             __typename
             ... on Issue {
-              number title state stateReason url updatedAt
+              id number title state stateReason url updatedAt
               issueType { name }
               labels(first: 20) { totalCount nodes { name } }
               assignees(first: 10) { totalCount nodes { login } }

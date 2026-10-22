@@ -4,7 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { createStarter, childEnv, CHILD_ENV_KEYS } from "../src/start.mjs";
 import { createApp } from "../src/server.mjs";
 import { normalize } from "../src/model.mjs";
-import { root, exampleProjects, fixtureBoard, http } from "./helpers.mjs";
+import { root, exampleProjects, fixtureBoard, claimableBoard, http } from "./helpers.mjs";
 
 // The example's localPath does not exist on any machine, and Start refuses a missing checkout, so point it at this repo.
 const projects = exampleProjects({ start: { enabled: true }, localPath: root });
@@ -152,6 +152,95 @@ test("start: the session gets an allowlisted environment, never the server's tok
   const { s } = starter({ launch: async (argv, opts) => void seen.push(opts) });
   assert.equal((await s.start(example, 6, { normalized })).status, 200);
   assert.deepEqual(seen, [{ env: childEnv() }]);
+});
+
+// ── the opt-in claim ────────────────────────────────────────────────────────
+
+const claimProjects = exampleProjects({ start: { enabled: true, claim: "dashboard" }, localPath: root });
+const claimExample = claimProjects.get("example");
+
+/** A claimer that records every call, in order with the launches, and answers as told. */
+function fakeClaimer(events, { claim, unclaim } = {}) {
+  return {
+    claim: async (ctx) => (events.push(["claim", ctx]), claim ? claim(ctx) : { ok: true, assigned: true, statusSet: true, assignees: ["me"] }),
+    unclaim: async (ctx, undo, landed) => (events.push(["unclaim", undo, landed]), unclaim ? unclaim() : { ok: true }),
+  };
+}
+
+function claimStarter(events, opts = {}) {
+  const launch = opts.launch ?? (async (argv) => void events.push(["launch", argv[10]]));
+  return createStarter({ root, launch, now: () => 1_700_000_000_000, node: "/usr/local/bin/node", claimer: fakeClaimer(events, opts) });
+}
+
+test("claim: with start.claim dashboard, the issue is claimed before anything launches, and the reply says so", async () => {
+  const events = [];
+  const r = await claimStarter(events).start(claimExample, 6, { normalized: normalize(claimableBoard(), claimExample) });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual(events.map((e) => e[0]), ["claim", "launch"]);
+  assert.deepEqual(events[0][1], { issueId: "I_6", viewerId: "U_me", projectId: "PVT_1", itemId: "PVTI_6", fieldId: "F_status", optionId: "O_prog" });
+  assert.deepEqual(r.body.claimed, { by: "me", status: "In progress" });
+});
+
+test("claim: with the default (agent), nothing is claimed", async () => {
+  const events = [];
+  const s = createStarter({ root, launch: async () => void events.push(["launch"]), node: "/usr/local/bin/node", claimer: fakeClaimer(events) });
+  assert.equal((await s.start(example, 6, { normalized })).status, 200);
+  assert.deepEqual(events.map((e) => e[0]), ["launch"]);
+});
+
+test("claim: a board without what a claim needs is refused before any write", async () => {
+  const events = [];
+  const n = normalize({ ...claimableBoard(), statusField: null }, claimExample);
+  const r = await claimStarter(events).start(claimExample, 6, { normalized: n });
+  assert.equal(r.status, 409);
+  assert.equal(r.body.reason, "claim");
+  assert.match(r.body.error, /cannot be claimed: .*Nothing was launched/);
+  assert.deepEqual(events, []);
+});
+
+test("claim: a refused claim launches nothing, and a half-landed one is undone exactly", async () => {
+  const events = [];
+  const half = () => ({ ok: false, assigned: true, statusSet: false, assignees: ["me"], error: "no project scope" });
+  const r = await claimStarter(events, { claim: half }).start(claimExample, 6, { normalized: normalize(claimableBoard(), claimExample) });
+  assert.equal(r.status, 502);
+  assert.match(r.body.error, /could not claim #6 on GitHub: no project scope\. The claim was undone\. Nothing was launched\./);
+  assert.deepEqual(events.map((e) => e[0]), ["claim", "unclaim"]);
+  assert.deepEqual(events[1][2], { ok: false, assigned: true, statusSet: false, assignees: ["me"], error: "no project scope" }, "the undo is told what landed");
+  const none = [];
+  await claimStarter(none, { claim: () => ({ ok: false, assigned: false, statusSet: false, assignees: null, error: "down" }) }).start(claimExample, 6, { normalized: normalize(claimableBoard(), claimExample) });
+  assert.deepEqual(none.map((e) => e[0]), ["claim"], "nothing landed, nothing to undo");
+});
+
+test("claim: a stranger assigned in the same moment wins; the claim is undone and nothing launches", async () => {
+  const events = [];
+  const race = () => ({ ok: true, assigned: true, statusSet: true, assignees: ["me", "rival"] });
+  const r = await claimStarter(events, { claim: race }).start(claimExample, 6, { normalized: normalize(claimableBoard(), claimExample) });
+  assert.equal(r.status, 409);
+  assert.match(r.body.error, /claimed by rival at the same moment\. The claim was undone\. Nothing was launched/);
+  assert.deepEqual(events.map((e) => e[0]), ["claim", "unclaim"]);
+});
+
+test("claim: an assignee the page already confirmed is not a rival", async () => {
+  const events = [];
+  const b = claimableBoard();
+  b.nodes.find((x) => x.content?.number === 6).content.assignees = { totalCount: 1, nodes: [{ login: "pal" }] };
+  const n = normalize(b, claimExample);
+  const s = claimStarter(events, { claim: () => ({ ok: true, assigned: true, statusSet: true, assignees: ["pal", "me"] }) });
+  const r = await s.start(claimExample, 6, { normalized: n, confirm: { assigned: true } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual(events.map((e) => e[0]), ["claim", "launch"]);
+});
+
+test("claim: a failed launch undoes the claim, and a failed undo says to fix the board by hand", async () => {
+  const events = [];
+  const boom = async () => { throw new Error("open: not found"); };
+  const r = await claimStarter(events, { launch: boom }).start(claimExample, 6, { normalized: normalize(claimableBoard(), claimExample) });
+  assert.equal(r.status, 500);
+  assert.match(r.body.error, /launch failed: open: not found\. The claim was undone\./);
+  assert.deepEqual(events.map((e) => e[0]), ["claim", "unclaim"]);
+  assert.deepEqual(events[1][1], { removeAssignee: true, restoreStatus: true, clearStatus: false, previousOptionId: "O_todo" });
+  const r2 = await claimStarter([], { launch: boom, unclaim: () => ({ ok: false, error: "HTTP 502" }) }).start(claimExample, 6, { normalized: normalize(claimableBoard(), claimExample) });
+  assert.match(r2.body.error, /Undoing the claim failed too \(HTTP 502\): change the assignee and Status back on GitHub/);
 });
 
 // ── through the server ───────────────────────────────────────────────────────
@@ -306,4 +395,28 @@ test("server start: the refetch behind a refused start updates the cached board,
   const refused = await post({ project: "example", number: 6 });
   assert.deepEqual(refused.json.requiresConfirm, ["assigned"]);
   assert.deepEqual(leaf6(await http(port, "/api/board?project=example")).assignees, ["someone"], "a plain load(false) sees the assignee");
+});
+
+test("server start: a claimed start refetches, so the next board load shows In progress, and the board says the claim is on", async (t) => {
+  const events = [];
+  const before = claimableBoard();
+  const after = claimableBoard();
+  const node6 = after.nodes.find((x) => x.content?.number === 6);
+  node6.status = { name: "In progress" };
+  node6.content.assignees = { totalCount: 1, nodes: [{ login: "me" }] };
+  const boards = [before, before, after];
+  let fetches = 0;
+  const fetchBoard = async () => (fetches++, boards.length > 1 ? boards.shift() : boards[0]);
+  const a = createApp({ projects: claimProjects, fetchBoard, starter: claimStarter(events) });
+  const port = await a.listen(0);
+  t.after(() => a.close());
+  const host = `127.0.0.1:${port}`;
+  const first = await http(port, "/api/board?project=example");
+  assert.deepEqual(first.json.start.claim, { status: "In progress" });
+  const r = await http(port, "/api/start", { method: "POST", headers: { "content-type": "application/json", origin: `http://${host}`, "sec-fetch-site": "same-origin", "x-mc-nonce": a.nonce }, body: JSON.stringify({ project: "example", number: 6 }) });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(fetches, 3, "load, refetch before the claim, refetch after it");
+  const leaf6 = (await http(port, "/api/board?project=example")).json.layers.flatMap((l) => l.groups.flatMap((g) => g.parts.flatMap((p) => p.leaves))).find((l) => l.number === 6);
+  assert.equal(leaf6.state, "inProgress");
+  assert.deepEqual(leaf6.assignees, ["me"]);
 });

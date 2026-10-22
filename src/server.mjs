@@ -152,7 +152,12 @@ export function createApp(deps) {
       partial: st.partial,
       refused,
       backoff: { active: backedOff(st), until: st.backoffUntil ? new Date(st.backoffUntil).toISOString() : null },
-      start: { enabled: Boolean(starter && project.start.enabled), started: starter ? starter.startedFor(project.key) : {} },
+      start: {
+        enabled: Boolean(starter && project.start.enabled),
+        started: starter ? starter.startedFor(project.key) : {},
+        // With the opt-in claim, the page says what Start will write before anyone presses it.
+        claim: project.start.claim === "dashboard" ? { status: project.status.inProgress[0] } : null,
+      },
     };
   }
 
@@ -219,6 +224,8 @@ export function createApp(deps) {
     if (st.lastError || !st.normalized) return json(res, 502, { error: `could not refetch the board, not starting: ${st.lastError ?? "no board data"}` });
 
     const result = await starter.start(project, number, { normalized: st.normalized, confirm });
+    // A claim changed the board: refetch now, so the page's reload shows In progress instead of a cached Ready.
+    if (result.body?.claimed) await refresh(project, "start");
     return json(res, result.status, result.body);
   }
 

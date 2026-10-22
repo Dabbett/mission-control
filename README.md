@@ -33,7 +33,7 @@ The background server logs method, path and status to `~/.local/state/mission-co
 ## Principles
 
 - **GitHub is the source of truth.** The server keeps one response per project in memory for `refreshSeconds` and nothing on disk. If something looks wrong, fix the board or the config, never the dashboard.
-- **Read-only.** One GraphQL document (`src/board.graphql`), one operation, type `query`. `src/readonly.mjs` refuses anything else at load and `test/readonly.test.mjs` proves the client sends nothing but that document.
+- **Read-only, except the opt-in claim at Start.** With `start.claim: "dashboard"`, pressing Start assigns you and sets the issue's Status on GitHub before the session opens (ADR 0002); that is the only write, and it has its own guard. Otherwise: one GraphQL document (`src/board.graphql`), one operation, type `query`. `src/readonly.mjs` refuses anything else at load and `test/readonly.test.mjs` proves the client sends nothing but that document.
 - **No model calls to view it.** Claude runs only when you start work from a card, in your terminal.
 - **Private.** Binds `127.0.0.1` only. The `gh` token lives in the server process and never reaches the page, a response or a log line.
 
@@ -66,7 +66,7 @@ One file per project in `~/.config/mission-control/projects/` (the repo's `proje
 | `decisionType`, `epicLabel`, `onHoldPattern` | defaults `Decision`, `epic`, `^\[On hold\]`; `onHoldPattern: null` turns the on-hold rule off (an empty pattern is refused) |
 | `prompt` | the agent's first message, one line; placeholders `{number}`, `{repo}`, `{title}` |
 | `command` | argv array, one element of which carries `{prompt}`; placeholders `{number}`, `{repo}`, `{prompt}` (never `{title}`) |
-| `start` | `{ "enabled": false, "terminal": "ghostty" }` |
+| `start` | `{ "enabled": false, "terminal": "ghostty", "claim": "agent" }`. `claim: "dashboard"` makes Start assign you and set Status to the first `status.inProgress` name before launching, and undo that if the launch fails (ADR 0002); then drop the claim sentence from `prompt` |
 | `model` | optional `{ "default", "allowed", "labelPrefix" }`; adds `--model <name>` after `claude`. One issue label `model:<name>` overrides the default; a name outside `allowed`, or two model labels, leaves the issue without a command and says why |
 | `layers[].groups[].parts[].issues` | the skeleton; a group may name its `epic` |
 
@@ -91,7 +91,7 @@ When the page cannot trust what it shows, Start is off and one notice says why: 
 - `Host` must be `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding). CSP `default-src 'self'; frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff`, never a CORS header. No inline script or style. API routes refuse requests a current browser marks as cross-site (`Sec-Fetch-Site`); a browser that omits that header is held to the 15 s forced-refresh floor instead.
 - An item GitHub cannot read (a blocker in a repo the token can't see) comes back as a null node: a null blocker makes its issue Blocked, and an unreadable item disappears from the skeleton. Both show as a "could not read" chip at the top of the page.
 - The page builds everything with `createElement` and `textContent`; links only to `https://github.com/`.
-- The `gh` token can write (scopes `repo`, `project`); read-only is a property of this code and its tests. Set `MISSION_CONTROL_TOKEN` to a fine-grained read-only PAT (Projects: read, Issues: read, Pull requests: read, Metadata) to make it a property of the credential too.
+- The `gh` token can write (scopes `repo`, `project`); read-only is a property of this code and its tests, and the opt-in claim uses exactly that. A read-only PAT cannot claim: with `start.claim: "dashboard"` its Start is refused and nothing launches. Set `MISSION_CONTROL_TOKEN` to a fine-grained read-only PAT (Projects: read, Issues: read, Pull requests: read, Metadata) to make it a property of the credential too.
 - Rate limit: one fetch costs about 46 of 5000 points an hour. The server serves the cache for `refreshSeconds`, honours a forced refresh at most every 15 s (counted from the last attempt, so right after a failure it says `too-soon-after-failure`), cuts off a request that has not finished 15 s after it began (Node checks every 2 s, so within about 17 s), shares one in-flight fetch, and doubles the interval while fewer than 500 points remain.
 
 ## Tests and fixtures
@@ -102,7 +102,7 @@ When the page cannot trust what it shows, Start is off and one notice says why: 
 
 ## Out of scope
 
-Writes to GitHub from the dashboard (a session it starts is told to claim its issue, and writes with your `gh` login), model calls, hosting, mobile layout, editing the layout from the page, Ghostty tabs via AppleScript, issue bodies, user-owned Projects (the query reads organization boards).
+Writes to GitHub from the dashboard beyond the opt-in claim at Start, model calls, hosting, mobile layout, editing the layout from the page, Ghostty tabs via AppleScript, issue bodies, user-owned Projects (the query reads organization boards).
 
 ## License
 

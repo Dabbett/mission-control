@@ -4,6 +4,7 @@ import { statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { argvFor, modelFor } from "./prompt.mjs";
 import { issueView, LEAF } from "./model.mjs";
+import { claimPlan, createClaimer } from "./claim.mjs";
 
 /**
  * The environment a started session gets. `open` hands its environment to the app it launches, and Ghostty passes
@@ -37,6 +38,7 @@ function isDirectory(path) {
  * @param {(argv: string[], opts: { env: object }) => Promise<void>} [deps.launch]   test seam; default runs `open` with the argv and the allowlisted env
  * @param {() => number} [deps.now]
  * @param {string} [deps.node]   absolute node binary for the launcher
+ * @param {{ claim: Function, unclaim: Function }} [deps.claimer]   test seam; default writes to GitHub (claim.mjs)
  */
 export function createStarter(deps) {
   if (!deps?.root || !isAbsolute(deps.root)) throw new Error("createStarter needs an absolute root");
@@ -44,6 +46,7 @@ export function createStarter(deps) {
   const launch = deps.launch ?? defaultLaunch;
   const now = deps.now ?? (() => Date.now());
   const node = deps.node ?? process.execPath;
+  const claimer = deps.claimer ?? createClaimer();
   const started = new Map(); // "<key>#<number>" -> ISO time, kept until the server restarts
   const locks = new Set();
 
@@ -86,16 +89,44 @@ export function createStarter(deps) {
     locks.add(id);
     try {
       const argv = ghosttyArgv(project, view);
-      await launch(argv, { env: childEnv() });
+      // With start.claim "dashboard", the issue is claimed on GitHub before anything launches (ADR 0002): a Start
+      // anywhere else then refetches In progress and is refused by the Ready check above.
+      let plan = null;
+      if (project.start.claim === "dashboard") {
+        plan = claimPlan(normalized, project, number);
+        if (plan.error) return { status: 409, body: { error: `#${number} cannot be claimed: ${plan.error}. Nothing was launched.`, reason: "claim" } };
+        const c = await claimer.claim(plan.ctx);
+        if (!c.ok) {
+          const undo = c.assigned || c.statusSet ? await claimer.unclaim(plan.ctx, plan.undo, c) : { ok: true };
+          return { status: 502, body: { error: `could not claim #${number} on GitHub: ${c.error}.${undoNote(undo)} Nothing was launched.`, reason: "claim" } };
+        }
+        // Two claims in the same moment both succeed (assignees is a list). Whoever sees a stranger backs off.
+        const others = (c.assignees ?? []).filter((l) => l !== plan.viewer && !plan.before.includes(l));
+        if (others.length) {
+          const undo = await claimer.unclaim(plan.ctx, plan.undo);
+          return { status: 409, body: { error: `#${number} was claimed by ${others.join(", ")} at the same moment.${undoNote(undo)} Nothing was launched.`, reason: "claim", assignees: c.assignees } };
+        }
+      }
+      try {
+        await launch(argv, { env: childEnv() });
+      } catch (e) {
+        const undo = plan ? await claimer.unclaim(plan.ctx, plan.undo) : null;
+        return { status: 500, body: { error: `launch failed: ${e instanceof Error ? e.message : String(e)}${undo ? `.${undoNote(undo, true)}` : ""}` } };
+      }
       const at = new Date(now()).toISOString();
       started.set(id, at);
-      return { status: 200, body: { ok: true, startedAt: at, model, command: argvFor(project, view) } };
-    } catch (e) {
-      return { status: 500, body: { error: `launch failed: ${e instanceof Error ? e.message : String(e)}` } };
+      return { status: 200, body: { ok: true, startedAt: at, model, command: argvFor(project, view), ...(plan ? { claimed: { by: plan.viewer, status: plan.status } } : {}) } };
     } finally {
       locks.delete(id);
     }
   }
 
   return { start, startedFor, ghosttyArgv, launcher };
+}
+
+/** One sentence on how an undo went, for the refusal. A failed undo says what to fix by hand. */
+function undoNote(undo, always = false) {
+  if (!undo) return "";
+  if (!undo.ok) return ` Undoing the claim failed too (${undo.error}): change the assignee and Status back on GitHub.`;
+  return always || !undo.nothing ? " The claim was undone." : "";
 }

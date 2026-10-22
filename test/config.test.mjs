@@ -204,3 +204,11 @@ test("validation: with Start on, flags that take the human out of the session ar
   assert.equal(validateProject(base({ start: null })).start.enabled, false, "null means no start section");
   assert.throws(() => validateProject(base({ start: 5 })), /start must be an object/);
 });
+
+test("validation: start.claim is agent by default, dashboard only with Start on and an In progress name to set", () => {
+  assert.equal(validateProject(base({})).start.claim, "agent");
+  assert.equal(validateProject(base({ start: { enabled: true, claim: "dashboard" } })).start.claim, "dashboard");
+  assert.throws(() => validateProject(base({ start: { claim: "dashboard" } })), /needs start\.enabled/);
+  assert.throws(() => validateProject(base({ start: { enabled: true, claim: "yes" } })), /must be "agent" or "dashboard"/);
+  assert.throws(() => validateProject(base({ start: { enabled: true, claim: "dashboard" }, status: { done: ["Done"], inReview: [], inProgress: [], todo: ["Todo"] } })), /needs a name in status\.inProgress/);
+});

@@ -383,6 +383,8 @@ function stagedCard(number, b) {
     if (l.assignees.length) reasons.push(`Assigned to ${l.assignees.join(", ")}`);
     const confirm = { started: Boolean(startedAt), assigned: l.assignees.length > 0 };
     const label = reasons.length ? `${reasons.join(" · ")} · start anyway?` : `Start #${number}`;
+    // With the opt-in claim, Start writes to GitHub before it launches: say so on the card, not only in the README.
+    if (b.start.claim) box.append(el("div", { class: "sub", text: `Start assigns you and sets Status to ${b.start.claim.status} on GitHub, then opens the session.` }));
     const blocked = startBlocked();
     actions.append(el("button", { type: "button", class: `btn ${reasons.length ? "btn-warn" : "btn-primary"}`, text: label, disabled: Boolean(blocked), title: blocked, onclick: (e) => startIssue(number, e.currentTarget, confirm) }));
   } else if (ready) {
@@ -489,7 +491,7 @@ async function startIssue(number, button, confirm = {}) {
     if (asked !== projectKey) return toast(`#${number} (${asked}): ${res.ok ? "started" : data.error ?? res.status}`, 6000); // switched meanwhile
     if (res.ok) {
       unstage(number);
-      toast(`Started #${number}${data.model ? ` on ${data.model}` : ""} in a new Ghostty window`, 6000);
+      toast(`Started #${number}${data.model ? ` on ${data.model}` : ""} in a new Ghostty window${data.claimed ? `; assigned to ${data.claimed.by}, Status ${data.claimed.status}` : ""}`, 6000);
       await load(false);
     } else if (res.status === 409 && data.requiresConfirm) {
       // A reason the card didn't show. Nothing is remembered as confirmed: the reload puts it on the label.

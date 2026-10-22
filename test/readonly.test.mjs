@@ -46,11 +46,21 @@ test("comments cannot hide a second operation", () => {
   assert.equal(definitions(sneaky).length, 1);
 });
 
-test("no write keyword appears anywhere under src/", () => {
+test("the write keyword appears under src/ only in the two claim documents", () => {
   const forbidden = "mu" + "tation";
+  const allowed = [join(root, "src", "claim.graphql"), join(root, "src", "unclaim.graphql")];
   for (const file of walk(join(root, "src"))) {
+    if (allowed.includes(file)) continue;
     const text = readFileSync(file, "utf8");
     assert.ok(!text.includes(forbidden), `${file} contains the word ${forbidden}`);
+  }
+});
+
+test("only src/claim.mjs reads the claim documents, and only start.mjs uses claim.mjs", () => {
+  for (const file of walk(join(root, "src")).concat(walk(join(root, "bin")))) {
+    const text = readFileSync(file, "utf8");
+    if (!file.endsWith("claim.mjs")) assert.ok(!/claim\.graphql/.test(text), `${file} names a claim document`);
+    if (!file.endsWith("start.mjs") && !file.endsWith("claim.mjs")) assert.ok(!/from "\.\/claim\.mjs"|claim\.mjs"/.test(text), `${file} imports claim.mjs`);
   }
 });
 
@@ -167,4 +177,23 @@ test("fetchBoard pages until hasNextPage is false", async () => {
   const out = await fetchBoard({ org: "o", projectNumber: 1 }, { fetch: fetchImpl, getToken: async () => "tok" });
   assert.equal(n, 2);
   assert.deepEqual(out.nodes.map((x) => x.content.number), [1, 2]);
+});
+
+test("fetchBoard returns what the opt-in claim needs: the viewer, the project id and the Status field's options", async () => {
+  const { fetchBoard } = await import("../src/github.mjs");
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      data: {
+        rateLimit: { cost: 1, remaining: 1, resetAt: "x" },
+        viewer: { id: "U_me", login: "me" },
+        organization: { projectV2: { id: "PVT_1", title: "T", url: "u", statusField: { id: "F", options: [{ id: "O", name: "Todo" }] }, items: { totalCount: 0, pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } },
+      },
+    }),
+  });
+  const out = await fetchBoard({ org: "o", projectNumber: 1 }, { fetch: fetchImpl, getToken: async () => "tok" });
+  assert.equal(out.projectId, "PVT_1");
+  assert.deepEqual(out.viewer, { id: "U_me", login: "me" });
+  assert.deepEqual(out.statusField, { id: "F", options: [{ id: "O", name: "Todo" }] });
 });
