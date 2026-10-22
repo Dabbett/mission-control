@@ -11,6 +11,7 @@ const W = "mu" + "tation";
 const CLAIM = readFileSync(join(root, "src", "claim.graphql"), "utf8");
 const UNCLAIM = readFileSync(join(root, "src", "unclaim.graphql"), "utf8");
 const example = exampleProjects({ start: { enabled: true, claim: "dashboard" }, localPath: root }).get("example");
+const CTX = { issueId: "I_6", viewerId: "U_me", projectId: "PVT_1", itemId: "PVTI_6", fieldId: "F_status", optionId: "O_prog" };
 
 // ── the documents and their guard ───────────────────────────────────────────
 
@@ -91,6 +92,13 @@ test("the sender never rejects: a gh failure says nothing was sent, a lost answe
   assert.match(t.error, /did not answer within 15 s/);
   const reset = createClaimer({ fetch: async () => { throw new Error("socket hang up"); }, getToken: async () => "tok" });
   assert.equal((await reset.claim(CTX)).unknown, true, "a dropped connection may have delivered the request");
+  const gateway = await recorder({ status: 504, json: {} }).claimer.claim(CTX);
+  assert.equal(gateway.unknown, true, "a 5xx may follow a write GitHub applied");
+  assert.equal((await recorder({ status: 403, json: {} }).claimer.claim(CTX)).unknown, false, "a 4xx is a refusal");
+  const notJson = createClaimer({ fetch: async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError("Unexpected token <"); } }), getToken: async () => "tok" });
+  const nj = await notJson.claim(CTX);
+  assert.equal(nj.unknown, true);
+  assert.match(nj.error, /not JSON/);
 });
 
 // ── the sender ──────────────────────────────────────────────────────────────
@@ -105,7 +113,6 @@ function recorder(reply) {
   return { calls, claimer: createClaimer({ fetch, getToken: async () => "tok" }) };
 }
 
-const CTX = { issueId: "I_6", viewerId: "U_me", projectId: "PVT_1", itemId: "PVTI_6", fieldId: "F_status", optionId: "O_prog" };
 const OK = { json: { data: { addAssigneesToAssignable: { assignable: { assignees: { nodes: [{ login: "me" }] } } }, updateProjectV2ItemFieldValue: { projectV2Item: { id: "PVTI_6" } } } } };
 
 test("claim sends the committed claim document with the plan's variables, and nothing else", async () => {

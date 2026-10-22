@@ -195,6 +195,7 @@ test("claim: a board without what a claim needs is refused before any write", as
   assert.equal(r.status, 409);
   assert.equal(r.body.reason, "claim");
   assert.match(r.body.error, /cannot be claimed: .*Nothing was launched/);
+  assert.equal(r.body.wrote, undefined, "no write went out, so the server has nothing to refetch for");
   assert.deepEqual(events, []);
 });
 
@@ -212,8 +213,9 @@ test("claim: a refused claim launches nothing, and a half-landed one is undone e
   const lost = [];
   const r3 = await claimStarter(lost, { claim: () => ({ ok: false, assigned: false, statusSet: false, assignees: null, unknown: true, error: "GitHub did not answer within 15 s" }) }).start(claimExample, 6, { normalized: normalize(claimableBoard(), claimExample) });
   assert.deepEqual(lost.map((e) => e[0]), ["claim", "unclaim"], "an answer that never came may hide a claim that landed: undo it all");
-  assert.deepEqual(lost[1][2], { assigned: true, statusSet: true });
-  assert.match(r3.body.error, /may have landed before the answer was lost/);
+  assert.deepEqual(lost[1][2], { assigned: true, statusSet: false }, "a lost answer takes back the assignee only: a rival may hold the Status now");
+  assert.match(r3.body.error, /may have landed before the answer was lost; if #6 now shows In progress and nobody is working on it, set its Status back/);
+  assert.equal(r3.body.wrote, true);
 });
 
 test("claim: a stranger assigned in the same moment wins; the claim is undone and nothing launches", async () => {
@@ -221,7 +223,7 @@ test("claim: a stranger assigned in the same moment wins; the claim is undone an
   const race = () => ({ ok: true, assigned: true, statusSet: true, assignees: ["me", "rival"] });
   const r = await claimStarter(events, { claim: race }).start(claimExample, 6, { normalized: normalize(claimableBoard(), claimExample) });
   assert.equal(r.status, 409);
-  assert.match(r.body.error, /claimed by rival at the same moment\. Your part of the claim was undone\. Its Status stays as it is now\. Nothing was launched/);
+  assert.match(r.body.error, /claimed by rival at the same moment\. Your part of the claim was undone\. Its Status stays In progress, in case their session started; if nobody is working on it, set the Status back on GitHub\. Nothing was launched/);
   assert.deepEqual(events.map((e) => e[0]), ["claim", "unclaim"]);
   assert.deepEqual(events[1][2], { assigned: true, statusSet: false }, "the loser takes back its assignee only; the winner's In progress stays");
 });
