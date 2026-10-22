@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readlinkSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -68,6 +68,36 @@ test("mc: start, status and stop drive the real server on a random port", async 
     assert.match(stopped.stdout, /stopped/);
   }
   assert.equal(run(["status"], home, { MC_PORT: port }).status, 1);
+});
+
+test("mc: a start lock left by a dead mc, or with no owner recorded, is removed and the start goes ahead", async () => {
+  const dead = spawnSync(process.execPath, ["-p", "process.pid"], { encoding: "utf8" }).stdout.trim();
+  for (const owner of [dead, null]) {
+    const home = mkdtempSync(join(tmpdir(), "mc-home-"));
+    const port = String(await freePort());
+    const lock = join(home, "state", "mission-control", "start.lock");
+    mkdirSync(lock, { recursive: true });
+    if (owner) writeFileSync(join(lock, "pid"), `${owner}\n`);
+    try {
+      const r = run(["start"], home, { MC_PORT: port });
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stderr, new RegExp(`removing a stale start lock left by pid ${owner ?? "unknown"}`));
+      assert.ok(!existsSync(lock), "the lock is released after the start");
+    } finally {
+      run(["stop"], home, { MC_PORT: port });
+    }
+  }
+});
+
+test("mc: a start lock held by a live process is waited on, then the failure names the lock path", async () => {
+  const home = mkdtempSync(join(tmpdir(), "mc-home-"));
+  const lock = join(home, "state", "mission-control", "start.lock");
+  mkdirSync(lock, { recursive: true });
+  writeFileSync(join(lock, "pid"), `${process.pid}\n`);
+  const r = run(["start"], home, { MC_PORT: String(await freePort()) });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, new RegExp(`another mc \\(pid ${process.pid}\\).*remove ${lock.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.ok(existsSync(join(lock, "pid")), "a live owner's lock is left alone");
 });
 
 test("mc: stop never kills a listener that is not mission control", async (t) => {

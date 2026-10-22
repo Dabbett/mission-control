@@ -23,6 +23,7 @@ PROJECT="${MC_PROJECT:-}"
 URL="http://127.0.0.1:${PORT}/"
 [ -z "$PROJECT" ] || URL="${URL}?project=${PROJECT}"
 LOG="$STATE/server.log"
+LOCK="$STATE/start.lock"
 MIN_NODE_MAJOR=22
 MIN_NODE_MINOR=12
 mkdir -p "$STATE"
@@ -77,6 +78,22 @@ port_holder() { # prints "mc" when mission control holds the port, "other" for a
   if [[ "$cmd" == *"bin/mission-control.mjs"* && "$cmd" == *"--port ${PORT}"* ]]; then echo "mc $pid"; else echo "other $pid"; fi
 }
 
+# The start lock is a directory (mkdir is atomic) holding the owner's pid. A lock whose owner is gone (SIGKILL, a
+# crash, power loss) is removed and taken once more, so it cannot block every later start. Two removers racing can
+# both pass; the port is the real guard, and the loser's server exits at startup with the port in use.
+take_lock() {
+  if mkdir "$LOCK" 2>/dev/null; then echo $$ > "$LOCK/pid"; return 0; fi
+  local owner
+  owner="$(cat "$LOCK/pid" 2>/dev/null || true)"
+  if [ -z "$owner" ]; then sleep 0.2; owner="$(cat "$LOCK/pid" 2>/dev/null || true)"; fi # the owner may be between mkdir and echo
+  if [[ "$owner" =~ ^[0-9]+$ ]] && kill -0 "$owner" 2>/dev/null; then return 1; fi
+  echo "mc: removing a stale start lock left by pid ${owner:-unknown} ($LOCK)" >&2
+  rm -f "$LOCK/pid"
+  rmdir "$LOCK" 2>/dev/null || return 1
+  mkdir "$LOCK" 2>/dev/null || return 1
+  echo $$ > "$LOCK/pid"
+}
+
 start() {
   if running; then return 0; fi
   local holder
@@ -85,16 +102,16 @@ start() {
     mc) fail "port ${PORT} already runs mission control for another project (mc stop, or set MC_PORT)" ;;
     other) fail "port ${PORT} is taken by something that is not mission control (set MC_PORT)" ;;
   esac
-  if ! mkdir "$STATE/start.lock" 2>/dev/null; then
+  if ! take_lock; then
     # a second launch within the same moment (a double key press): wait for the first one
     local i
     for i in $(seq 1 25); do
       if running; then return 0; fi
       sleep 0.2
     done
-    fail "another mc is starting the server and it has not come up"
+    fail "another mc (pid $(cat "$LOCK/pid" 2>/dev/null || echo unknown)) is starting the server and it has not come up. If none is running, remove $LOCK"
   fi
-  trap 'rmdir "$STATE/start.lock" 2>/dev/null || true' EXIT
+  trap 'rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true' EXIT
   local node
   node="$(find_node)" || fail "Node ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR} or newer not found. Install it (fnm install ${MIN_NODE_MAJOR}) or put node on PATH."
   if [ -f "$LOG" ] && [ "$(wc -c < "$LOG" | tr -d ' ')" -gt 1000000 ]; then : > "$LOG"; fi
