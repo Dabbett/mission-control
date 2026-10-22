@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
-  "description": "Live, read-only product-skeleton dashboard over a GitHub Project. Runs on 127.0.0.1 only.",
+  "description": "Live product-skeleton dashboard over a GitHub Project: read-only, except an opt-in claim at Start. Runs on 127.0.0.1 only.",
   "type": "module",
   "engines": {
     "node": ">=22.12"

@@ -35,6 +35,20 @@ test("rootFields skips arguments (braces included), directives and nested select
   assert.deepEqual(rootFields(" a(x: [1, 2]) , b "), ["a", "b"]);
 });
 
+test("an inline fragment or a bare selection at the root is refused, so nothing runs at the root unseen", () => {
+  const add = "addAssigneesToAssignable(input: {}) { x }";
+  assert.throws(() => assertWriteOnly(`${W} A { ${add} ... { deleteIssue(input: { issueId: "I" }) { y } } }`, CLAIM_FIELDS), /fragment at the root/);
+  assert.throws(() => assertWriteOnly(`${W} A { ${add} ...{ deleteIssue(input: {}) { y } } }`, CLAIM_FIELDS), /fragment at the root/);
+  assert.throws(() => assertWriteOnly(`${W} A { ${add} ... @include(if: true) { deleteIssue(input: {}) { y } } }`, CLAIM_FIELDS), /fragment at the root/);
+  assert.throws(() => assertWriteOnly(`${W} A { ${add} ... on Mutation { deleteIssue(input: {}) { y } } }`, CLAIM_FIELDS), /fragment at the root/);
+  assert.throws(() => assertWriteOnly(`${W} A { ${add} { deleteIssue(input: {}) { y } } }`, CLAIM_FIELDS), /belongs to no field/);
+  assert.throws(() => assertWriteOnly(`${W} A { ${add} @include(if: true) { deleteIssue(input: {}) { y } } }`, CLAIM_FIELDS), /belongs to no field/);
+});
+
+test("the claim documents have no string literal that could fool the scanner", () => {
+  for (const doc of [CLAIM, UNCLAIM]) assert.doesNotMatch(doc, /"[^"\n]*[#{}()][^"\n]*"/);
+});
+
 test("a comment cannot smuggle a root field past the guard", () => {
   assert.deepEqual(assertWriteOnly(`${W} A { a # deleteIssue(input: {}) { x }\n }`, ["a"]), ["a"]);
 });
@@ -60,6 +74,23 @@ test("claimPlan: says why it cannot claim, instead of guessing", () => {
   n.items.set(6, { ...n.items.get(6), nodeId: null });
   assert.match(claimPlan(n, example, 6).error, /without the ids/);
   assert.match(claimPlan(n, example, 999).error, /not on the board/);
+  const renamed = normalize(claimableBoard(), example);
+  renamed.items.set(6, { ...renamed.items.get(6), status: "Backlog" });
+  assert.match(claimPlan(renamed, example, 6).error, /Status "Backlog" is not an option/, "an undo must be able to put the old Status back");
+  const cut = normalize(claimableBoard(), example);
+  cut.items.set(6, { ...cut.items.get(6), truncated: ["assignees"] });
+  assert.equal(claimPlan(cut, example, 6).undo.removeAssignee, false, "a truncated list may hide the viewer");
+});
+
+test("the sender never rejects: a gh failure says nothing was sent, a lost answer says it may have landed", async () => {
+  const noGh = createClaimer({ fetch: async () => { throw new Error("unused"); }, getToken: async () => { throw new Error("gh is not logged in"); } });
+  assert.deepEqual(await noGh.claim(CTX), { ok: false, assigned: false, statusSet: false, assignees: null, unknown: false, error: "gh is not logged in" });
+  const timeout = createClaimer({ fetch: async () => { throw Object.assign(new Error("t"), { name: "TimeoutError" }); }, getToken: async () => "tok" });
+  const t = await timeout.claim(CTX);
+  assert.equal(t.unknown, true);
+  assert.match(t.error, /did not answer within 15 s/);
+  const reset = createClaimer({ fetch: async () => { throw new Error("socket hang up"); }, getToken: async () => "tok" });
+  assert.equal((await reset.claim(CTX)).unknown, true, "a dropped connection may have delivered the request");
 });
 
 // ── the sender ──────────────────────────────────────────────────────────────

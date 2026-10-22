@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { assertWriteOnly } from "./readonly.mjs";
-import { normStatus } from "./status.mjs";
+import { normStatus, claimStatusName } from "./status.mjs";
 import { getToken as defaultGetToken, forgetToken } from "./token.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -17,11 +17,6 @@ assertWriteOnly(UNCLAIM, UNCLAIM_FIELDS);
 
 const ENDPOINT = "https://api.github.com/graphql";
 const TIMEOUT_MS = 15_000;
-
-/** The Status a claim sets: the first name in the config's status.inProgress. */
-export function claimStatusName(project) {
-  return project.status.inProgress[0] ?? null;
-}
 
 /**
  * What the claim writes for one issue, and what its undo restores. Pure: reads the refetched board only.
@@ -39,11 +34,14 @@ export function claimPlan(normalized, project, number) {
   const option = field.options.find((o) => normStatus(o.name) === normStatus(target));
   if (!option) return { error: `the board's Status field has no option "${target}" (the first name in status.inProgress)` };
   const previous = item.status ? field.options.find((o) => normStatus(o.name) === normStatus(item.status)) : null;
+  // The undo must be able to put the old Status back; a name the field no longer offers would leave it In progress.
+  if (item.status && !previous) return { error: `its Status "${item.status}" is not an option of the board's Status field, so a failed launch could not put it back` };
   return {
     ctx: { issueId: item.nodeId, viewerId: viewer.id, projectId: normalized.projectId, itemId: item.itemId, fieldId: field.id, optionId: option.id },
     undo: {
       // Only what the claim changed: an assignee that was already there stays, and so does the old Status.
-      removeAssignee: !item.assignees.includes(viewer.login),
+      // A truncated list may hide the viewer, so an undo never removes an assignee it cannot prove it added.
+      removeAssignee: !item.assignees.includes(viewer.login) && !item.truncated.includes("assignees"),
       restoreStatus: Boolean(previous && previous.id !== option.id),
       clearStatus: !item.status,
       previousOptionId: previous?.id ?? "",
@@ -70,8 +68,14 @@ export function createClaimer(deps = {}) {
   const fetchImpl = deps.fetch ?? globalThis.fetch;
   const getToken = deps.getToken ?? defaultGetToken;
 
+  /** Never rejects: every failure comes back as errors, with `unknown` when GitHub's answer never arrived. */
   async function send(query, variables) {
-    const token = await getToken();
+    let token;
+    try {
+      token = await getToken();
+    } catch (e) {
+      return { data: null, errors: [e instanceof Error ? e.message : String(e)], unknown: false }; // nothing was sent
+    }
     let res;
     let json;
     try {
@@ -88,8 +92,9 @@ export function createClaimer(deps = {}) {
       if (!res.ok) return { data: null, errors: [`GitHub returned HTTP ${res.status}`] };
       json = await res.json();
     } catch (e) {
-      if (e?.name === "TimeoutError" || e?.name === "AbortError") return { data: null, errors: [`GitHub did not answer within ${TIMEOUT_MS / 1000} s`] };
-      return { data: null, errors: [`GitHub unreachable: ${e?.message ?? e}`] };
+      if (e?.name === "TimeoutError" || e?.name === "AbortError") return { data: null, errors: [`GitHub did not answer within ${TIMEOUT_MS / 1000} s`], unknown: true };
+      if (e?.name === "SyntaxError") return { data: null, errors: ["GitHub returned a body that is not JSON"], unknown: true };
+      return { data: null, errors: [`GitHub unreachable: ${e?.message ?? e}`], unknown: true };
     }
     const errors = Array.isArray(json?.errors) ? json.errors.map((e) => e?.message ?? "unknown error") : [];
     return { data: json?.data ?? null, errors };
@@ -97,12 +102,12 @@ export function createClaimer(deps = {}) {
 
   /** Assign the viewer and set the Status. Says which half landed, so a partial claim can be undone exactly. */
   async function claim(ctx) {
-    const { data, errors } = await send(CLAIM, ctx);
+    const { data, errors, unknown } = await send(CLAIM, ctx);
     const assigned = Boolean(data?.addAssigneesToAssignable);
     const statusSet = Boolean(data?.updateProjectV2ItemFieldValue);
     const nodes = data?.addAssigneesToAssignable?.assignable?.assignees?.nodes;
     const assignees = Array.isArray(nodes) ? nodes.map((n) => n?.login).filter((l) => typeof l === "string") : null;
-    if (errors.length || !assigned || !statusSet) return { ok: false, assigned, statusSet, assignees, error: explain(errors.length ? errors : ["GitHub did not confirm the claim"]) };
+    if (errors.length || !assigned || !statusSet) return { ok: false, assigned, statusSet, assignees, unknown: Boolean(unknown), error: explain(errors.length ? errors : ["GitHub did not confirm the claim"]) };
     return { ok: true, assigned, statusSet, assignees };
   }
 

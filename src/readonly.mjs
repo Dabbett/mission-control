@@ -55,15 +55,23 @@ export function definitions(doc) {
 
 /**
  * The root field names of one operation body, in order. Arguments (inside parentheses, braces included) and
- * directives are skipped; an alias is refused, because `harmless: deleteIssue(...)` would read as "harmless".
+ * directives are skipped. Only `name(args) @directive { ... }` may stand at the root: an alias is refused, because
+ * `harmless: deleteIssue(...)` would read as "harmless", and so is an inline fragment (`... { deleteIssue }` or
+ * `... @include(if: true) { ... }`), or any selection that does not belong to a named field, because its contents
+ * would run at the root unseen.
  */
 export function rootFields(body) {
   const fields = [];
   let depth = 0;
   let parens = 0;
   let word = "";
+  let open = false; // a field was named and its selection has not been opened yet
   const flush = () => {
-    if (word && !word.startsWith("@") && !word.startsWith("...")) fields.push(word);
+    if (word.startsWith(".")) throw new Error("GraphQL write document uses a fragment at the root; name every field as itself");
+    if (word && !word.startsWith("@")) {
+      fields.push(word);
+      open = true;
+    }
     word = "";
   };
   for (const ch of body) {
@@ -76,7 +84,11 @@ export function rootFields(body) {
       if (depth === 0) flush();
       parens++;
     } else if (ch === "{") {
-      if (depth === 0) flush();
+      if (depth === 0) {
+        flush();
+        if (!open) throw new Error("GraphQL write document has a selection at the root that belongs to no field");
+        open = false;
+      }
       depth++;
     } else if (ch === "}") {
       depth--;
