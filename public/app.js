@@ -162,7 +162,11 @@ function renderBands(b) {
       strip.append(c);
     }
     for (const d of b.drift ?? []) {
-      const text = d.kind === "missing" ? `config names #${d.number} (${d.part}) but it is not on the board` : d.kind === "unclaimed" ? `#${d.number}, a child of epic #${d.epic}, is claimed by no part` : `epic #${d.number} is not on the board`;
+      const text =
+        d.kind === "missing" ? `config names #${d.number} (${d.part}) but it is not on the board`
+        : d.kind === "unclaimed" ? `#${d.number}, a child of epic #${d.epic}, is claimed by no part`
+        : d.kind === "unknownStatus" ? `Status "${d.name}" on ${d.count} item${d.count > 1 ? "s" : ""} is in none of the config's status lists, so they count as Ready`
+        : `epic #${d.number} is not on the board`;
       strip.append(chip(`config drift: ${text}`, "warn"));
     }
     for (const t of b.truncated ?? []) strip.append(chip(`#${t.number}: ${t.fields.join(", ")} truncated`, "warn"));
@@ -240,7 +244,7 @@ const ORDER = ["ready", "inReview", "inProgress", "blocked", "decision", "done",
 function leafDetail(l, b) {
   const box = el("div", { class: `leaf s-${l.state}` });
   const line = el("div", { class: "line" }, el("span", { class: "num", text: `#${l.number}` }), el("span", { class: "title" }, github(l.title, l.url)));
-  if (l.status) line.append(chip(l.status, "muted"));
+  if (l.status) line.append(chip(l.statusKnown === false ? `${l.status} (not in the config)` : l.status, l.statusKnown === false ? "warn" : "muted"));
   if (l.assignees.length) line.append(chip(l.assignees.join(", "), "muted"));
   for (const x of l.external) line.append(chip(x, "decision"));
   box.append(line);

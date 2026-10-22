@@ -137,3 +137,57 @@ test("pickProject: the requested key must exist; otherwise the only project, els
   const two = new Map([["b", {}], ["a", {}]]);
   assert.equal(pickProject(two, null), "b");
 });
+
+// ── the file is checked, not trusted ────────────────────────────────────────
+
+test("validation refuses unknown keys and anything that looks like a token, without echoing the value", () => {
+  assert.throws(() => validateProject(base({ refreshSecond: 5 })), /unknown key refreshSecond; known keys: key, title, org/);
+  assert.throws(() => validateProject(base({ apiKey: "x", token: "y" })), /unknown keys apiKey, token/);
+  let message = "";
+  try {
+    validateProject(base({ prompt: "work #{number} with ghp_abcdefghijklmnop" }));
+  } catch (e) {
+    message = e.message;
+  }
+  assert.match(message, /the value at prompt looks like a token; secrets never go in project files/);
+  assert.ok(!message.includes("ghp_"), "the value is never echoed");
+  assert.throws(() => validateProject(base({ layers: [{ name: "L", groups: [{ name: "sk-ant-api03-zzzzzzzz", parts: [] }] }] })), /the value at layers\[0\]\.groups\[0\]\.name looks like a token/);
+  assert.throws(() => validateProject(base({ title: "github_pat_11ABCDEFG_more" })), /the value at title looks like a token/);
+});
+
+test("validation refuses line breaks where Start would pass them as one argument", () => {
+  assert.throws(() => validateProject(base({ prompt: "work #{number}\nread AGENTS.md" })), /prompt must not contain a line break/);
+  assert.throws(() => validateProject(base({ command: ["claude", "-w\n", "{prompt}"] })), /command\[1\] must not contain a line break/);
+  assert.throws(() => validateProject(base({ localPath: "~/some\nwhere" })), /localPath must not contain a line break/);
+});
+
+test("validation: {title} is a prompt placeholder only, and command must carry {prompt}", () => {
+  assert.throws(() => validateProject(base({ command: ["claude", "{title}", "{prompt}"] })), /command\[1\] must not use \{title\}/);
+  assert.throws(() => validateProject(base({ command: ["claude", "-w", "issue-{number}"] })), /command must include \{prompt\}/);
+  assert.doesNotThrow(() => validateProject(base({ prompt: "work #{number}: {title}" })), "{title} in the prompt is fine; it is wrapped there");
+});
+
+test("validation: onHoldPattern null turns the rule off, empty is refused", () => {
+  assert.equal(validateProject(base({ onHoldPattern: null })).onHoldPattern, null);
+  assert.throws(() => validateProject(base({ onHoldPattern: "" })), /onHoldPattern is empty, which would match every title/);
+  assert.throws(() => validateProject(base({ onHoldPattern: 5 })), /must be a string, or null/);
+});
+
+test("validation: a Status name in two lists, and duplicate layer, group or part names, are refused", () => {
+  assert.throws(() => validateProject(base({ status: { done: ["Done"], inReview: [], inProgress: ["done "], todo: [] } })), /Status "done " is in both status\.done and status\.inProgress/);
+  assert.throws(() => validateProject(base({ status: { done: [" "], inReview: [], inProgress: [], todo: [] } })), /status\.done has an empty option name/);
+  assert.throws(() => validateProject(base({ layers: [{ name: "L", groups: [] }, { name: "L", groups: [] }] })), /two layers are named "L"/);
+  assert.throws(() => validateProject(base({ layers: [{ name: "L", groups: [{ name: "G", parts: [] }, { name: "G", parts: [] }] }] })), /two groups in L are named "G"/);
+  assert.throws(() => validateProject(base({ layers: [{ name: "L", groups: [{ name: "G", parts: [{ name: "P", issues: [1] }, { name: "P", issues: [2] }] }] }] })), /two parts in L \/ G are named "P"/);
+  assert.doesNotThrow(() => validateProject(base({ layers: [{ name: "L", groups: [{ name: "", parts: [{ name: "P" }] }, { name: "", parts: [{ name: "Q" }] }] }] })), "unnamed groups may repeat");
+});
+
+test("validation: with Start on, flags that take the human out of the session are refused; with Start off, Copy stays free", () => {
+  for (const flag of ["--dangerously-skip-permissions", "--permission-mode", "--permission-mode=bypassPermissions", "-p", "--print", "--allowedTools", "--allowedTools=Bash"]) {
+    assert.throws(() => validateProject(base({ start: { enabled: true }, command: ["claude", flag, "{prompt}"] })), /takes the human out of the session/, flag);
+    assert.doesNotThrow(() => validateProject(base({ command: ["claude", flag, "{prompt}"] })), `${flag} with Start off`);
+  }
+  assert.doesNotThrow(() => validateProject(base({ start: { enabled: true }, command: ["claude", "--model", "opus", "{prompt}"] })));
+  assert.equal(validateProject(base({ start: null })).start.enabled, false, "null means no start section");
+  assert.throws(() => validateProject(base({ start: 5 })), /start must be an object/);
+});

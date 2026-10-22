@@ -4,6 +4,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { DANGEROUS_FLAGS } from "./claude-flags.mjs";
 
 export function expandHome(p, home = homedir()) {
   if (p === "~") return home;
@@ -14,9 +15,45 @@ export function expandHome(p, home = homedir()) {
 const KEY_RE = /^[a-z0-9][a-z0-9-]*$/;
 const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const MODEL_RE = /^[a-z0-9][a-z0-9.-]*$/;
+const KNOWN_KEYS = ["key", "title", "org", "projectNumber", "repo", "localPath", "refreshSeconds", "status", "decisionType", "epicLabel", "onHoldPattern", "prompt", "command", "start", "model", "layers"];
+export const STATUS_GROUPS = ["done", "inReview", "inProgress", "todo"];
+// Shapes of the tokens people are most likely to paste: Anthropic keys, GitHub tokens and fine-grained PATs.
+const SECRET_RE = /\b(sk-ant-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,})/;
+const LINE_BREAK = /[\r\n]/;
 
 function fail(source, msg) {
   throw new Error(`${source}: ${msg}`);
+}
+
+/** Status option names are compared after trimming and lower-casing, so "In Progress" and "In progress" match. */
+export function normStatus(name) {
+  return typeof name === "string" ? name.trim().toLowerCase() : "";
+}
+
+/** The path of the first string value that looks like a token, or null. The value itself is never reported. */
+function findSecret(value, path = "") {
+  if (typeof value === "string") return SECRET_RE.test(value) ? path || "(root)" : null;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const hit = findSecret(value[i], `${path}[${i}]`);
+      if (hit) return hit;
+    }
+  } else if (value && typeof value === "object") {
+    for (const [k, v] of Object.entries(value)) {
+      const hit = findSecret(v, path ? `${path}.${k}` : k);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+function duplicate(names) {
+  const seen = new Set();
+  for (const n of names) {
+    if (seen.has(n)) return n;
+    seen.add(n);
+  }
+  return null;
 }
 
 function stringArray(v) {
@@ -30,6 +67,12 @@ function isPositiveInt(n) {
 /** Validate one raw project object and return the normalized project. */
 export function validateProject(raw, source = "project") {
   if (!raw || typeof raw !== "object") fail(source, "not an object");
+  // Typos and pasted secrets are refused, not ignored: an unknown key would silently fall back to a default, and a
+  // token in this file would be committed with it.
+  const unknown = Object.keys(raw).filter((k) => !KNOWN_KEYS.includes(k));
+  if (unknown.length) fail(source, `unknown key${unknown.length > 1 ? "s" : ""} ${unknown.join(", ")}; known keys: ${KNOWN_KEYS.join(", ")}`);
+  const secretAt = findSecret(raw);
+  if (secretAt) fail(source, `the value at ${secretAt} looks like a token; secrets never go in project files (the server uses your gh login)`);
   const p = {};
 
   if (typeof raw.key !== "string" || !KEY_RE.test(raw.key)) fail(source, "key must be lowercase letters, digits and dashes");
@@ -44,6 +87,7 @@ export function validateProject(raw, source = "project") {
   p.repo = raw.repo;
 
   if (typeof raw.localPath !== "string" || !raw.localPath) fail(source, "localPath is required");
+  if (LINE_BREAK.test(raw.localPath)) fail(source, "localPath must not contain a line break");
   p.localPath = resolve(expandHome(raw.localPath));
   if (!isAbsolute(p.localPath)) fail(source, "localPath must resolve to an absolute path");
 
@@ -52,33 +96,58 @@ export function validateProject(raw, source = "project") {
 
   const st = raw.status;
   if (!st || typeof st !== "object") fail(source, "status mapping is required");
-  for (const k of ["done", "inReview", "inProgress", "todo"]) {
+  for (const k of STATUS_GROUPS) {
     if (!stringArray(st[k])) fail(source, `status.${k} must be an array of option names`);
   }
   p.status = { done: st.done, inReview: st.inReview, inProgress: st.inProgress, todo: st.todo };
+  // A name in two lists would be decided by rule order; say so instead.
+  const seenStatus = new Map();
+  for (const k of STATUS_GROUPS) {
+    for (const name of st[k]) {
+      const n = normStatus(name);
+      if (!n) fail(source, `status.${k} has an empty option name`);
+      if (seenStatus.has(n) && seenStatus.get(n) !== k) fail(source, `Status "${name}" is in both status.${seenStatus.get(n)} and status.${k}`);
+      seenStatus.set(n, k);
+    }
+  }
 
   p.decisionType = raw.decisionType ?? "Decision";
   if (typeof p.decisionType !== "string") fail(source, "decisionType must be a string");
   p.epicLabel = raw.epicLabel ?? "epic";
   if (typeof p.epicLabel !== "string") fail(source, "epicLabel must be a string");
-  const pat = raw.onHoldPattern ?? "^\\[On hold\\]";
-  if (typeof pat !== "string") fail(source, "onHoldPattern must be a string");
-  try {
-    p.onHoldPattern = new RegExp(pat, "i");
-  } catch {
-    fail(source, "onHoldPattern is not a valid regular expression");
+  if (raw.onHoldPattern === null) {
+    p.onHoldPattern = null; // the on-hold rule is off
+  } else {
+    const pat = raw.onHoldPattern ?? "^\\[On hold\\]";
+    if (typeof pat !== "string") fail(source, "onHoldPattern must be a string, or null to turn the on-hold rule off");
+    if (!pat) fail(source, "onHoldPattern is empty, which would match every title; set it to null to turn the on-hold rule off");
+    try {
+      p.onHoldPattern = new RegExp(pat, "i");
+    } catch {
+      fail(source, "onHoldPattern is not a valid regular expression");
+    }
   }
 
   if (typeof raw.prompt !== "string" || !raw.prompt) fail(source, "prompt template is required");
+  if (LINE_BREAK.test(raw.prompt)) fail(source, "prompt must not contain a line break; Start passes it as one argument");
   p.prompt = raw.prompt;
   if (!stringArray(raw.command) || raw.command.length === 0) fail(source, "command must be a non-empty array of strings");
+  raw.command.forEach((part, i) => {
+    if (LINE_BREAK.test(part)) fail(source, `command[${i}] must not contain a line break`);
+    if (part.includes("{title}")) fail(source, `command[${i}] must not use {title}; it is a prompt placeholder, where it is wrapped as untrusted text`);
+  });
+  if (!raw.command.some((part) => part.includes("{prompt}"))) fail(source, "command must include {prompt} in one element, or the agent starts with no first message");
   p.command = raw.command;
 
   const start = raw.start ?? {};
-  if (typeof start !== "object") fail(source, "start must be an object");
+  if (!start || typeof start !== "object") fail(source, "start must be an object");
   p.start = { enabled: start.enabled === true, terminal: start.terminal ?? "ghostty" };
   if (p.start.terminal !== "ghostty") fail(source, `start.terminal "${p.start.terminal}" is not supported`);
   if (p.start.enabled && p.command[0] !== "claude") fail(source, 'start.enabled needs command[0] to be "claude"; the launcher runs nothing else');
+  if (p.start.enabled) {
+    const flag = p.command.find((a) => DANGEROUS_FLAGS.test(a));
+    if (flag) fail(source, `command carries ${flag}, which takes the human out of the session; Start refuses it (Copy still works with Start off)`);
+  }
 
   // Optional model choice: a default plus a per-issue label override, both limited to an allowlist.
   // The value lands in argv after "--model", so it must look like a model name, never like a flag.
@@ -122,6 +191,17 @@ export function validateProject(raw, source = "project") {
     });
     return { name: layer.name, groups };
   });
+  // Names are paths on the page (a part's drill-in reopens by path), so a duplicate would reopen the wrong one.
+  const dupLayer = duplicate(p.layers.map((l) => l.name));
+  if (dupLayer) fail(source, `two layers are named "${dupLayer}"`);
+  for (const layer of p.layers) {
+    const dupGroup = duplicate(layer.groups.map((g) => g.name).filter(Boolean));
+    if (dupGroup) fail(source, `two groups in ${layer.name} are named "${dupGroup}"`);
+    for (const g of layer.groups) {
+      const dupPart = duplicate(g.parts.map((part) => part.name));
+      if (dupPart) fail(source, `two parts in ${layer.name}${g.name ? " / " + g.name : ""} are named "${dupPart}"`);
+    }
+  }
   p.epics = [...epics];
   return p;
 }

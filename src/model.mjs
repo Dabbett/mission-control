@@ -1,4 +1,5 @@
 // Pure functions: raw board nodes → items → leaf states → skeleton. No I/O, no clock.
+import { normStatus, STATUS_GROUPS } from "./config.mjs";
 
 export const LEAF = Object.freeze({
   dropped: "dropped",
@@ -99,6 +100,17 @@ function externalLabels(labels) {
   return labels.filter((l) => /^external:/i.test(l));
 }
 
+/**
+ * Which config list a board Status belongs to: "done", "inReview", "inProgress", "todo", "unknown" for a name in
+ * none of them, or null when the item has no Status. Names match after trimming and lower-casing.
+ */
+export function statusGroup(project, status) {
+  const n = normStatus(status);
+  if (!n) return null;
+  for (const g of STATUS_GROUPS) if ((project.status[g] ?? []).some((name) => normStatus(name) === n)) return g;
+  return "unknown";
+}
+
 function describeBlocker(b, items, project) {
   const onBoard = items.get(b.number);
   return {
@@ -114,8 +126,9 @@ function describeBlocker(b, items, project) {
 /** Leaf state for one issue. First matching rule wins, in the order of the plan's table. */
 export function leafState(item, items, project) {
   if (item.state === "CLOSED" && item.stateReason === "NOT_PLANNED") return { state: LEAF.dropped, reason: "closed as not planned", blockers: [] };
-  if (item.state === "CLOSED" || project.status.done.includes(item.status)) return { state: LEAF.done, reason: null, blockers: [] };
-  if (project.onHoldPattern.test(item.title)) return { state: LEAF.blocked, reason: "on hold", blockers: [] };
+  const group = statusGroup(project, item.status);
+  if (item.state === "CLOSED" || group === "done") return { state: LEAF.done, reason: null, blockers: [] };
+  if (project.onHoldPattern && project.onHoldPattern.test(item.title)) return { state: LEAF.blocked, reason: "on hold", blockers: [] };
 
   const blockers = [];
   let unreadable = false;
@@ -132,8 +145,8 @@ export function leafState(item, items, project) {
   }
 
   const openPRs = item.prs.filter((p) => p.state === "OPEN");
-  if (project.status.inReview.includes(item.status) || openPRs.some((p) => !p.isDraft)) return { state: LEAF.inReview, reason: null, blockers: [] };
-  if (project.status.inProgress.includes(item.status) || openPRs.length > 0) return { state: LEAF.inProgress, reason: null, blockers: [] };
+  if (group === "inReview" || openPRs.some((p) => !p.isDraft)) return { state: LEAF.inReview, reason: null, blockers: [] };
+  if (group === "inProgress" || openPRs.length > 0) return { state: LEAF.inProgress, reason: null, blockers: [] };
   if (item.type === project.decisionType) return { state: LEAF.decision, reason: "open decision", blockers: [] };
   return { state: LEAF.ready, reason: null, blockers: [] };
 }
@@ -145,6 +158,7 @@ function leafView(item, items, project) {
     title: item.title,
     url: item.url,
     status: item.status,
+    statusKnown: statusGroup(project, item.status) !== "unknown", // false: the config lists no such Status, so the item fell through to Ready
     type: item.type,
     labels: item.labels,
     external: externalLabels(item.labels),
@@ -271,6 +285,11 @@ export function buildSkeleton(normalized, project) {
     }
     for (const child of epic.subIssues) if (!claimed.has(child)) drift.push({ kind: "unclaimed", number: child, epic: e });
   }
+
+  // A Status the config does not list is a config problem, not a Ready item: say so where drift is shown.
+  const unknownStatus = new Map();
+  for (const item of items.values()) if (statusGroup(project, item.status) === "unknown") unknownStatus.set(item.status, (unknownStatus.get(item.status) ?? 0) + 1);
+  for (const [name, n] of unknownStatus) drift.push({ kind: "unknownStatus", name, count: n });
 
   const allLeaves = uniqueByNumber(layers.flatMap((l) => l.groups.flatMap((g) => g.parts.flatMap((p) => p.leaves))));
   const boardLeaves = [...items.values()].filter((i) => !i.isEpic && i.type !== project.decisionType).map(view);
