@@ -88,7 +88,12 @@ export function createStarter(deps) {
     }
     locks.add(id);
     try {
-      const argv = ghosttyArgv(project, view);
+      let argv;
+      try {
+        argv = ghosttyArgv(project, view);
+      } catch (e) {
+        return { status: 500, body: { error: `launch failed: ${e instanceof Error ? e.message : String(e)}. Nothing was claimed or launched.` } };
+      }
       // With start.claim "dashboard", the issue is claimed on GitHub before anything launches (ADR 0002): a Start
       // anywhere else then refetches In progress and is refused by the Ready check above.
       let plan = null;
@@ -97,14 +102,21 @@ export function createStarter(deps) {
         if (plan.error) return { status: 409, body: { error: `#${number} cannot be claimed: ${plan.error}. Nothing was launched.`, reason: "claim" } };
         const c = await claimer.claim(plan.ctx);
         if (!c.ok) {
-          const undo = c.assigned || c.statusSet ? await claimer.unclaim(plan.ctx, plan.undo, c) : { ok: true };
-          return { status: 502, body: { error: `could not claim #${number} on GitHub: ${c.error}.${undoNote(undo)} Nothing was launched.`, reason: "claim" } };
+          // A timeout or a dropped connection says nothing about what GitHub did, so the whole undo goes out; it is
+          // harmless for the parts that never landed. A GitHub answer says exactly which half landed.
+          const landed = c.unknown ? { assigned: true, statusSet: true } : c;
+          const undo = landed.assigned || landed.statusSet ? await claimer.unclaim(plan.ctx, plan.undo, landed) : { ok: true };
+          const maybe = c.unknown ? ` The claim may have landed before the answer was lost.` : "";
+          return { status: 502, body: { error: `could not claim #${number} on GitHub: ${c.error}.${maybe}${undoNote(undo)} Nothing was launched.`, reason: "claim" } };
         }
-        // Two claims in the same moment both succeed (assignees is a list). Whoever sees a stranger backs off.
-        const others = (c.assignees ?? []).filter((l) => l !== plan.viewer && !plan.before.includes(l));
-        if (others.length) {
-          const undo = await claimer.unclaim(plan.ctx, plan.undo);
-          return { status: 409, body: { error: `#${number} was claimed by ${others.join(", ")} at the same moment.${undoNote(undo)} Nothing was launched.`, reason: "claim", assignees: c.assignees } };
+        // Two claims in the same moment both succeed (assignees is a list). Whoever sees a stranger backs off, and
+        // takes back only its own assignee: the Status stays In progress, because the stranger's session is running.
+        // A reply without the list cannot show a stranger, so it is treated the same way.
+        const others = c.assignees ? c.assignees.filter((l) => l !== plan.viewer && !plan.before.includes(l)) : null;
+        if (!others || others.length) {
+          const undo = await claimer.unclaim(plan.ctx, plan.undo, { assigned: true, statusSet: false });
+          const who = others ? `was claimed by ${others.join(", ")} at the same moment` : "was claimed, but GitHub did not return its assignees, so a claim by someone else at the same moment cannot be ruled out";
+          return { status: 409, body: { error: `#${number} ${who}.${undoNote(undo)} Its Status stays as it is now. Nothing was launched.`, reason: "claim", assignees: c.assignees } };
         }
       }
       try {
@@ -127,6 +139,6 @@ export function createStarter(deps) {
 /** One sentence on how an undo went, for the refusal. A failed undo says what to fix by hand. */
 function undoNote(undo, always = false) {
   if (!undo) return "";
-  if (!undo.ok) return ` Undoing the claim failed too (${undo.error}): change the assignee and Status back on GitHub.`;
-  return always || !undo.nothing ? " The claim was undone." : "";
+  if (!undo.ok) return ` Undoing the claim failed too (${undo.error}): check the assignee and Status on GitHub and change them back by hand.`;
+  return always || !undo.nothing ? " Your part of the claim was undone." : "";
 }

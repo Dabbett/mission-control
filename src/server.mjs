@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { normalize, buildSkeleton, LEAF } from "./model.mjs";
 import { copyLine, modelFor } from "./prompt.mjs";
+import { claimStatusName } from "./status.mjs";
 
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
 const STATIC = new Map([
@@ -156,7 +157,7 @@ export function createApp(deps) {
         enabled: Boolean(starter && project.start.enabled),
         started: starter ? starter.startedFor(project.key) : {},
         // With the opt-in claim, the page says what Start will write before anyone presses it.
-        claim: project.start.claim === "dashboard" ? { status: project.status.inProgress[0] } : null,
+        claim: project.start.claim === "dashboard" ? { status: claimStatusName(project) } : null,
       },
     };
   }
@@ -224,8 +225,9 @@ export function createApp(deps) {
     if (st.lastError || !st.normalized) return json(res, 502, { error: `could not refetch the board, not starting: ${st.lastError ?? "no board data"}` });
 
     const result = await starter.start(project, number, { normalized: st.normalized, confirm });
-    // A claim changed the board: refetch now, so the page's reload shows In progress instead of a cached Ready.
-    if (result.body?.claimed) await refresh(project, "start");
+    // A claim (or an attempt that may have landed, or its undo) changed the board: refetch now, so the page's reload
+    // shows GitHub's state instead of a cached Ready.
+    if (result.body?.claimed || result.body?.reason === "claim") await refresh(project, "start");
     return json(res, result.status, result.body);
   }
 

@@ -203,12 +203,17 @@ test("claim: a refused claim launches nothing, and a half-landed one is undone e
   const half = () => ({ ok: false, assigned: true, statusSet: false, assignees: ["me"], error: "no project scope" });
   const r = await claimStarter(events, { claim: half }).start(claimExample, 6, { normalized: normalize(claimableBoard(), claimExample) });
   assert.equal(r.status, 502);
-  assert.match(r.body.error, /could not claim #6 on GitHub: no project scope\. The claim was undone\. Nothing was launched\./);
+  assert.match(r.body.error, /could not claim #6 on GitHub: no project scope\. Your part of the claim was undone\. Nothing was launched\./);
   assert.deepEqual(events.map((e) => e[0]), ["claim", "unclaim"]);
   assert.deepEqual(events[1][2], { ok: false, assigned: true, statusSet: false, assignees: ["me"], error: "no project scope" }, "the undo is told what landed");
   const none = [];
   await claimStarter(none, { claim: () => ({ ok: false, assigned: false, statusSet: false, assignees: null, error: "down" }) }).start(claimExample, 6, { normalized: normalize(claimableBoard(), claimExample) });
   assert.deepEqual(none.map((e) => e[0]), ["claim"], "nothing landed, nothing to undo");
+  const lost = [];
+  const r3 = await claimStarter(lost, { claim: () => ({ ok: false, assigned: false, statusSet: false, assignees: null, unknown: true, error: "GitHub did not answer within 15 s" }) }).start(claimExample, 6, { normalized: normalize(claimableBoard(), claimExample) });
+  assert.deepEqual(lost.map((e) => e[0]), ["claim", "unclaim"], "an answer that never came may hide a claim that landed: undo it all");
+  assert.deepEqual(lost[1][2], { assigned: true, statusSet: true });
+  assert.match(r3.body.error, /may have landed before the answer was lost/);
 });
 
 test("claim: a stranger assigned in the same moment wins; the claim is undone and nothing launches", async () => {
@@ -216,8 +221,19 @@ test("claim: a stranger assigned in the same moment wins; the claim is undone an
   const race = () => ({ ok: true, assigned: true, statusSet: true, assignees: ["me", "rival"] });
   const r = await claimStarter(events, { claim: race }).start(claimExample, 6, { normalized: normalize(claimableBoard(), claimExample) });
   assert.equal(r.status, 409);
-  assert.match(r.body.error, /claimed by rival at the same moment\. The claim was undone\. Nothing was launched/);
+  assert.match(r.body.error, /claimed by rival at the same moment\. Your part of the claim was undone\. Its Status stays as it is now\. Nothing was launched/);
   assert.deepEqual(events.map((e) => e[0]), ["claim", "unclaim"]);
+  assert.deepEqual(events[1][2], { assigned: true, statusSet: false }, "the loser takes back its assignee only; the winner's In progress stays");
+});
+
+test("claim: a claim reply without its assignee list cannot rule out a rival, so it backs off the same way", async () => {
+  const events = [];
+  const blind = () => ({ ok: true, assigned: true, statusSet: true, assignees: null });
+  const r = await claimStarter(events, { claim: blind }).start(claimExample, 6, { normalized: normalize(claimableBoard(), claimExample) });
+  assert.equal(r.status, 409);
+  assert.match(r.body.error, /did not return its assignees/);
+  assert.deepEqual(events[1][2], { assigned: true, statusSet: false });
+  assert.ok(!events.some((e) => e[0] === "launch"));
 });
 
 test("claim: an assignee the page already confirmed is not a rival", async () => {
@@ -236,11 +252,11 @@ test("claim: a failed launch undoes the claim, and a failed undo says to fix the
   const boom = async () => { throw new Error("open: not found"); };
   const r = await claimStarter(events, { launch: boom }).start(claimExample, 6, { normalized: normalize(claimableBoard(), claimExample) });
   assert.equal(r.status, 500);
-  assert.match(r.body.error, /launch failed: open: not found\. The claim was undone\./);
+  assert.match(r.body.error, /launch failed: open: not found\. Your part of the claim was undone\./);
   assert.deepEqual(events.map((e) => e[0]), ["claim", "unclaim"]);
   assert.deepEqual(events[1][1], { removeAssignee: true, restoreStatus: true, clearStatus: false, previousOptionId: "O_todo" });
   const r2 = await claimStarter([], { launch: boom, unclaim: () => ({ ok: false, error: "HTTP 502" }) }).start(claimExample, 6, { normalized: normalize(claimableBoard(), claimExample) });
-  assert.match(r2.body.error, /Undoing the claim failed too \(HTTP 502\): change the assignee and Status back on GitHub/);
+  assert.match(r2.body.error, /Undoing the claim failed too \(HTTP 502\): check the assignee and Status on GitHub and change them back by hand/);
 });
 
 // ── through the server ───────────────────────────────────────────────────────

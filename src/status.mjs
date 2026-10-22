@@ -5,3 +5,8 @@ export const STATUS_GROUPS = ["done", "inReview", "inProgress", "todo"];
 export function normStatus(name) {
   return typeof name === "string" ? name.trim().toLowerCase() : "";
 }
+
+/** The Status the opt-in claim sets: the first name in the config's status.inProgress. */
+export function claimStatusName(project) {
+  return project.status.inProgress[0] ?? null;
+}
