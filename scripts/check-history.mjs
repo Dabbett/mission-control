@@ -2,8 +2,9 @@
 // Commit messages and e-mail addresses must stay publishable. The tree guard (test/publish-guard.test.mjs)
 // cannot see them, so CI runs this over the commits of each push or pull request:
 // - messages must match no denylist pattern (scripts/denylist.mjs);
-// - author and committer e-mail addresses must be allowed: GitHub noreply addresses and generic no-reply senders
-//   by default, plus whatever MC_ALLOWED_EMAILS (a regular expression) adds. It widens the rule, never replaces it.
+// - author and committer e-mail addresses must be allowed: GitHub noreply addresses, GitHub's own domain (bots sign
+//   off with a support address there) and generic no-reply senders by default, plus whatever MC_ALLOWED_EMAILS (a
+//   regular expression) adds. It widens the rule, never replaces it.
 // Author and committer names are not scanned: they are the publishing GitHub account, public by construction.
 // Usage: node scripts/check-history.mjs [<rev-range>]     default: the last commit (HEAD)
 // A range with an all-zeros or empty left side (a repository's first push; a manual or scheduled run) checks every
@@ -14,7 +15,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadDenylist, scan } from "./denylist.mjs";
 
-export const NOREPLY = /@users\.noreply\.github\.com$|^no-?reply@/i;
+export const NOREPLY = /@users\.noreply\.github\.com$|@github\.com$|^no-?reply@/i;
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 
 /** The allowed-e-mail test: NOREPLY, widened by `extra` (a regular expression source) when given. */
