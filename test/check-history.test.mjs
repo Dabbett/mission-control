@@ -70,11 +70,29 @@ test("checkHistory: clean commits pass; a non-allowed e-mail and a denylisted wo
   assert.deepEqual(checkHistory({ repo: dir, range: "HEAD~1..HEAD~1", patterns, isAllowedEmail }), { commits: 0, problems: [] });
 });
 
-test("checkHistory: a denylisted name in an e-mail domain fails even when the address is allowed", (t) => {
+test("checkHistory: a denylisted name in an e-mail domain fails even when the address is allowed, by default or by MC_ALLOWED_EMAILS", (t) => {
   const { dir, commit } = repo(t);
   const sha = commit("work", { email: addr("noreply", "acme.example") });
   const r = checkHistory({ repo: dir, range: "HEAD", patterns, isAllowedEmail: allowedEmailTest() });
   assert.deepEqual(r.problems, [`${sha.slice(0, 7)}: author e-mail domain matches denylist pattern #2`, `${sha.slice(0, 7)}: committer e-mail domain matches denylist pattern #2`]);
+
+  const widened = commit("work", { email: addr("person", "acme.example") });
+  const w = checkHistory({ repo: dir, range: "HEAD", patterns, isAllowedEmail: allowedEmailTest("@acme\\.example$") });
+  assert.deepEqual(w.problems, [`${widened.slice(0, 7)}: author e-mail domain matches denylist pattern #2`, `${widened.slice(0, 7)}: committer e-mail domain matches denylist pattern #2`], "widening allows the address; the domain scan still applies");
+});
+
+test("checkHistory: a second @ in an address and a unit separator in a message cannot hide text from the scan", (t) => {
+  const { dir, commit } = repo(t);
+  const twoAts = commit("work", { email: `${addr("noreply", "x")}@acme.example` });
+  const r = checkHistory({ repo: dir, range: "HEAD", patterns, isAllowedEmail: allowedEmailTest() });
+  assert.deepEqual(r.problems, [
+    `${twoAts.slice(0, 7)}: author e-mail domain matches denylist pattern #1`,
+    `${twoAts.slice(0, 7)}: author e-mail domain matches denylist pattern #2`,
+    `${twoAts.slice(0, 7)}: committer e-mail domain matches denylist pattern #1`,
+    `${twoAts.slice(0, 7)}: committer e-mail domain matches denylist pattern #2`,
+  ], "everything after the first @ is scanned, and it looks like an address itself");
+  const cut = commit("work\x1fmention Acme after a unit separator");
+  assert.deepEqual(checkHistory({ repo: dir, range: "HEAD", patterns, isAllowedEmail: allowedEmailTest() }).problems, [`${cut.slice(0, 7)}: message line 1 matches denylist pattern #2`]);
 });
 
 test("checkHistory: in a message, an allowed address is masked to its domain, so the domain is still scanned", (t) => {
