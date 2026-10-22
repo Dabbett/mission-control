@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { connect } from "node:net";
 import { createApp, FORCE_MIN_SECONDS, REQUEST_TIMEOUT_MS, HEADERS_TIMEOUT_MS } from "../src/server.mjs";
 import { fetchBoard as realFetchBoard } from "../src/github.mjs";
 import { exampleProjects, fixtureBoard, http } from "./helpers.mjs";
@@ -25,7 +26,7 @@ async function app(t, opts = {}) {
       return next;
     });
   const logs = [];
-  const a = createApp({ projects, fetchBoard, now: c.now, log: (l) => logs.push(l), starter: opts.starter ?? null });
+  const a = createApp({ projects, fetchBoard, now: c.now, log: (l) => logs.push(l), starter: opts.starter ?? null, timeouts: opts.timeouts });
   const port = await a.listen(0);
   t.after(() => a.close());
   return { ...a, port, calls, clock: c, logs };
@@ -139,6 +140,26 @@ test("a request that never finishes is cut off in seconds, not Node's five minut
   assert.equal(a.server.requestTimeout, REQUEST_TIMEOUT_MS);
   assert.equal(a.server.headersTimeout, HEADERS_TIMEOUT_MS);
   assert.ok(REQUEST_TIMEOUT_MS <= 15_000 && HEADERS_TIMEOUT_MS <= REQUEST_TIMEOUT_MS);
+});
+
+test("a request that stalls halfway through its body is answered 408 and its socket closed", async (t) => {
+  // A starter and the same-origin headers, so the server gets as far as reading the body, where it waits.
+  const starter = { start: async () => ({ status: 500, body: {} }), startedFor: () => ({}) };
+  const a = await app(t, { starter, timeouts: { requestMs: 300, headersMs: 200, checkEveryMs: 50 } });
+  const host = `127.0.0.1:${a.port}`;
+  const sock = connect(a.port, "127.0.0.1");
+  const t0 = Date.now();
+  sock.write(`POST /api/start HTTP/1.1\r\nHost: ${host}\r\nOrigin: http://${host}\r\nSec-Fetch-Site: same-origin\r\nX-MC-Nonce: ${a.nonce}\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{"pro`);
+  let reply = "";
+  sock.on("data", (d) => (reply += d));
+  await new Promise((resolve, reject) => {
+    sock.on("close", resolve);
+    sock.on("error", resolve);
+    // destroyed on failure too, or closing the server would wait on this socket for Node's own timeouts
+    setTimeout(() => (sock.destroy(), reject(new Error("the stalled socket was still open after 3 s"))), 3000);
+  });
+  assert.match(reply, /^HTTP\/1\.1 408/);
+  assert.ok(Date.now() - t0 < 2000, `closed after ${Date.now() - t0} ms`);
 });
 
 test("/api/board: concurrent requests share one fetch", async (t) => {

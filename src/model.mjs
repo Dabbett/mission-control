@@ -1,5 +1,5 @@
 // Pure functions: raw board nodes → items → leaf states → skeleton. No I/O, no clock.
-import { normStatus, STATUS_GROUPS } from "./config.mjs";
+import { normStatus, STATUS_GROUPS } from "./status.mjs";
 
 export const LEAF = Object.freeze({
   dropped: "dropped",
@@ -220,7 +220,7 @@ export function buildSkeleton(normalized, project) {
     name: layer.name,
     groups: layer.groups.map((group) => {
       const parts = group.parts.map((part) => {
-        const where = `${layer.name} / ${group.name ? group.name + " / " : ""}${part.name}`;
+        const where = `${layer.name} / ${group.name ? group.name + " / " : ""}${part.name}`; // = partPath() in config.mjs
         const leaves = [];
         const decisions = [];
         for (const n of part.issues) {
@@ -288,7 +288,13 @@ export function buildSkeleton(normalized, project) {
 
   // A Status the config does not list is a config problem, not a Ready item: say so where drift is shown.
   const unknownStatus = new Map();
-  for (const item of items.values()) if (statusGroup(project, item.status) === "unknown") unknownStatus.set(item.status, (unknownStatus.get(item.status) ?? 0) + 1);
+  // Counted only where it matters: an issue that is Ready because of it. A closed issue is Done whatever its Status,
+  // and an epic is not a leaf.
+  for (const item of items.values()) {
+    if (item.isEpic || statusGroup(project, item.status) !== "unknown") continue;
+    if (leafState(item, items, project).state !== LEAF.ready) continue;
+    unknownStatus.set(item.status, (unknownStatus.get(item.status) ?? 0) + 1);
+  }
   for (const [name, n] of unknownStatus) drift.push({ kind: "unknownStatus", name, count: n });
 
   const allLeaves = uniqueByNumber(layers.flatMap((l) => l.groups.flatMap((g) => g.parts.flatMap((p) => p.leaves))));

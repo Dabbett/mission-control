@@ -343,6 +343,17 @@ test("skeleton: a Status in none of the lists counts as Ready, marks the leaf, a
   assert.equal(issueView(n, p, 4).statusKnown, true);
 });
 
+test("skeleton: unknown-Status drift counts only issues it makes Ready, not closed issues, epics or blocked ones", () => {
+  const p = project({ layers: [{ name: "L", groups: [{ name: "G", parts: [{ name: "P", issues: [1, 2, 3, 4] }] }] }] });
+  const n = normalize(board([
+    issue(1, { status: "Archived" }),
+    issue(2, { status: "Archived", state: "CLOSED", stateReason: "COMPLETED" }),
+    issue(3, { status: "Archived", labels: [{ name: "epic" }] }),
+    issue(4, { status: "Archived", title: "[On hold] later" }),
+  ]), p);
+  assert.deepEqual(buildSkeleton(n, p).drift, [{ kind: "unknownStatus", name: "Archived", count: 1 }]);
+});
+
 test("leaf: onHoldPattern null turns the on-hold rule off", () => {
   assert.equal(state([issue(1, { title: "[On hold] x" })], 1, project({ onHoldPattern: null })).state, LEAF.ready);
   assert.equal(state([issue(1, { title: "[On hold] x" })], 1).state, LEAF.blocked, "the default pattern still applies");

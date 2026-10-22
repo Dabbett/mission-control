@@ -64,6 +64,8 @@ export function createStarter(deps) {
     const view = issueView(normalized, project, number);
     if (!view) return { status: 404, body: { error: `#${number} is not on the board` } };
     if (view.state !== LEAF.ready) return { status: 409, body: { error: `#${number} is ${view.state}, not Ready`, state: view.state, reason: view.reason } };
+    // Ready only because the config names no such Status: "Waiting" or "Needs info" would pass the gate otherwise.
+    if (view.statusKnown === false) return { status: 409, body: { error: `#${number}: its Status "${view.status}" is in none of the config's status lists, so Start cannot tell whether it is ready. Add it to the config (status.todo if it is).`, reason: "status" } };
     const { model, error: modelError } = modelFor(project, view);
     if (modelError) return { status: 409, body: { error: `#${number}: ${modelError}` } };
     // `open` returns success as soon as Ghostty accepts the request, so a missing checkout would otherwise be a

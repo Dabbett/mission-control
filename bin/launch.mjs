@@ -2,12 +2,14 @@
 // Runs inside the terminal window that Start opened. Sets the working directory and runs claude.
 // Usage: node launch.mjs --cwd <absolute dir> -- claude [args...]
 // Accepts only `claude` as the command, refuses flags that would take the human out of the session, and refuses to
-// run when ANTHROPIC_API_KEY is set (the session would bill the API, not the subscription). On any failure it prints
-// why and waits for a key, so the window stays readable.
+// run when a variable in BILLING_ENV is set (the session would bill an API account or another provider, not the
+// user's own Claude login). On any failure it prints why and waits for a key, so the window stays readable.
 import { spawnSync } from "node:child_process";
 import { existsSync, readSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { dangerousFlag } from "../src/claude-flags.mjs";
+
+const BILLING_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"];
 
 function waitForKey() {
   if (!process.stdin.isTTY) return;
@@ -33,8 +35,10 @@ if (command !== "claude") fail(`only the claude command may be launched, got: ${
 const rest = args.slice(4);
 const bad = dangerousFlag(rest);
 if (bad) fail(`refusing ${bad}: a session started from the dashboard must ask before it acts`);
-if (process.env.ANTHROPIC_API_KEY) {
-  fail("ANTHROPIC_API_KEY is set in this terminal's environment, so the session would bill the API instead of your Claude subscription. Unset it (check your shell profile) and start again.");
+// Names only, never values: a key must not end up on screen.
+const billing = BILLING_ENV.filter((k) => process.env[k]);
+if (billing.length) {
+  fail(`${billing.join(", ")} ${billing.length > 1 ? "are" : "is"} set in this terminal's environment, so the session would bill an API account or another provider instead of your Claude login. Unset ${billing.length > 1 ? "them" : "it"} (check your shell profile) and start again.`);
 }
 
 const result = spawnSync("claude", rest, { cwd, stdio: "inherit" });

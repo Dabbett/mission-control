@@ -120,6 +120,17 @@ test("start: a failed launch reports and sets no marker", async () => {
   assert.deepEqual(s.startedFor("example"), {});
 });
 
+test("start: an issue whose Status the config does not list is refused, though the board shows it Ready", async () => {
+  const n = normalize(fixtureBoard(), example);
+  n.items.set(6, { ...n.items.get(6), status: "Waiting" });
+  const { s, launches } = starter();
+  const r = await s.start(example, 6, { normalized: n });
+  assert.equal(r.status, 409);
+  assert.equal(r.body.reason, "status");
+  assert.match(r.body.error, /Status "Waiting" is in none of the config's status lists/);
+  assert.equal(launches.length, 0);
+});
+
 test("start: a missing checkout is a 409 with reason localPath, before any launch", async () => {
   const missing = { ...example, localPath: join(root, "does-not-exist") };
   const { s, launches } = starter();

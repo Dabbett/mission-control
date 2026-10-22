@@ -80,7 +80,8 @@ port_holder() { # prints "mc" when mission control holds the port, "other" for a
 
 # The start lock is a directory (mkdir is atomic) holding the owner's pid. A lock whose owner is gone (SIGKILL, a
 # crash, power loss) is removed and taken once more, so it cannot block every later start. Two removers racing can
-# both pass; the port is the real guard, and the loser's server exits at startup with the port in use.
+# both pass; the port is the real guard: the loser's server exits at startup with the port in use, and the loser
+# then finds the winner's server running and reports success.
 take_lock() {
   if mkdir "$LOCK" 2>/dev/null; then echo $$ > "$LOCK/pid"; return 0; fi
   local owner
@@ -111,7 +112,8 @@ start() {
     done
     fail "another mc (pid $(cat "$LOCK/pid" 2>/dev/null || echo unknown)) is starting the server and it has not come up. If none is running, remove $LOCK"
   fi
-  trap 'rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true' EXIT
+  # Released only while it is still ours: after a race, the lock may be another mc's.
+  trap '[ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] && rm -f "$LOCK/pid" && rmdir "$LOCK" 2>/dev/null; true' EXIT
   local node
   node="$(find_node)" || fail "Node ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR} or newer not found. Install it (fnm install ${MIN_NODE_MAJOR}) or put node on PATH."
   if [ -f "$LOG" ] && [ "$(wc -c < "$LOG" | tr -d ' ')" -gt 1000000 ]; then : > "$LOG"; fi
@@ -125,6 +127,7 @@ start() {
   for i in $(seq 1 25); do
     if running; then return 0; fi
     if ! kill -0 "$pid" 2>/dev/null; then
+      if running; then return 0; fi # another mc won a race for the port, and its server is up
       echo "last log lines:" >&2
       tail -n 5 "$LOG" >&2 || true
       fail "the server exited at startup"

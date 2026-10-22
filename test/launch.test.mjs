@@ -8,10 +8,11 @@ import { root } from "./helpers.mjs";
 
 const launcher = join(root, "bin", "launch.mjs");
 
-// ANTHROPIC_API_KEY is dropped from the inherited environment, so a key in the developer's shell does not fail every case.
+// The billing variables are dropped from the inherited environment, so one in the developer's shell does not fail every case.
+const BILLING = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"];
 function run(args, env = {}) {
   const base = { ...process.env };
-  delete base.ANTHROPIC_API_KEY;
+  for (const k of BILLING) delete base[k];
   return spawnSync(process.execPath, [launcher, ...args], { encoding: "utf8", env: { ...base, ...env }, stdio: ["ignore", "pipe", "pipe"] });
 }
 
@@ -28,19 +29,23 @@ test("launch: refuses anything but claude, relative or missing cwd, and bad usag
 
 test("launch: refuses flags that take the human out of the session, whatever the config said", () => {
   const dir = mkdtempSync(join(tmpdir(), "mc-launch-"));
-  for (const flag of ["--dangerously-skip-permissions", "--permission-mode=bypassPermissions", "--permission-mode", "-p", "--print", "--allowedTools=Bash", "--allowed-tools"]) {
+  for (const flag of ["--dangerously-skip-permissions", "--permission-mode=bypassPermissions", "--permission-mode", "-p", "--print", "--allowedTools=Bash", "--allowed-tools", "--settings", "--setting-sources=project"]) {
     const r = run(["--cwd", dir, "--", "claude", "-w", "issue-1", flag, "x"]);
     assert.notEqual(r.status, 0, flag);
     assert.match(r.stderr, new RegExp(`refusing ${flag.replace(/[-=]/g, "\\$&")}`), flag);
   }
 });
 
-test("launch: refuses to run when ANTHROPIC_API_KEY is set, and never prints the key", () => {
+test("launch: refuses to run while a variable that redirects billing is set, naming it and never printing its value", () => {
   const dir = mkdtempSync(join(tmpdir(), "mc-launch-"));
-  const r = run(["--cwd", dir, "--", "claude"], { ANTHROPIC_API_KEY: "sk-ant-should-not-appear" });
-  assert.notEqual(r.status, 0);
-  assert.match(r.stderr, /ANTHROPIC_API_KEY is set/);
-  assert.ok(!(r.stdout + r.stderr).includes("sk-ant-should-not-appear"));
+  for (const k of BILLING) {
+    const r = run(["--cwd", dir, "--", "claude"], { [k]: "value-should-not-appear" });
+    assert.notEqual(r.status, 0, k);
+    assert.match(r.stderr, new RegExp(`${k} is set`), k);
+    assert.ok(!(r.stdout + r.stderr).includes("value-should-not-appear"), k);
+  }
+  const two = run(["--cwd", dir, "--", "claude"], { ANTHROPIC_API_KEY: "x", CLAUDE_CODE_USE_BEDROCK: "1" });
+  assert.match(two.stderr, /ANTHROPIC_API_KEY, CLAUDE_CODE_USE_BEDROCK are set/);
 });
 
 test("launch: runs claude from PATH with the given cwd and argv, and passes the exit status through", () => {

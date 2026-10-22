@@ -104,7 +104,8 @@ test("page: Start lives only on a Ready staged card, next to the prose-dependenc
   const starts = js.match(/startIssue\(number, e\.currentTarget, confirm\)/g) ?? [];
   assert.equal(starts.length, 1, "one Start button");
   assert.ok(!js.includes("startIssue(l.number"), "no Start in the drill-in");
-  assert.match(js, /function stagedCard[\s\S]*?const ready = l && l\.state === "ready" && l\.copy;[\s\S]*?No blocking edges on the board\.[\s\S]*?if \(ready && b\.start\?\.enabled\)/);
+  assert.match(js, /function stagedCard[\s\S]*?const ready = l && l\.state === "ready" && l\.copy;[\s\S]*?No blocking edges on the board\.[\s\S]*?if \(ready && b\.start\?\.enabled && !unlisted\)/);
+  assert.match(js, /const unlisted = ready && l\.statusKnown === false;/, "no Start for a Status the config does not list; Copy stays");
   assert.match(js, /MANY_STARTED = 2/);
 });
 
@@ -116,7 +117,7 @@ test("page: a restarted server is detected from the run id, and the notice offer
 });
 
 test("page: Start is off while the board is stale, the server is silent, or the nonce is dead", () => {
-  assert.match(js, /function startBlocked\(\) \{\s*if \(restarted\)[^\n]*\n\s*if \(failure\)[^\n]*\n\s*if \(board\?\.stale\)/);
+  assert.match(js, /function startBlocked\(\) \{\s*if \(restarted\)[^\n]*\n\s*if \(failure\?\.kind === "unreachable"\)[^\n]*\n\s*if \(failure\)[^\n]*no board data[^\n]*\n\s*if \(board\?\.stale\)/);
   assert.match(js, /const blocked = startBlocked\(\);\s*actions\.append\(el\("button", \{[^\n]*?disabled: Boolean\(blocked\), title: blocked, onclick: \(e\) => startIssue/);
   assert.match(js, /app\.classList\.toggle\("stale", Boolean\(startBlocked\(\)\)\)/, "and the bands say so");
   assert.match(js, /b\.ageSeconds \+ Math\.round\(\(Date\.now\(\) - receivedAt\) \/ 1000\)/, "the age keeps counting on the page");
@@ -126,6 +127,7 @@ test("page: a refused Start stays on its card, toasts for 6 s, and a 409 redraws
   assert.match(js, /startErrors\.set\(number, data\.error \?\? `HTTP \$\{res\.status\}`\);\s*toast\(`Start refused: [^`]*`, 6000\);\s*\/\/[^\n]*\n\s*if \(res\.status === 409 \|\| restarted\) await load\(false\);/);
   assert.match(js, /if \(startErrors\.has\(number\)\) box\.append/);
   assert.match(js, /function unstage\(number\) \{\s*startErrors\.delete\(number\);/);
+  assert.match(js, /async function startIssue\(number, button, confirm = \{\}\) \{\s*button\.disabled = true;\s*startErrors\.delete\(number\);/, "a new press clears the old refusal");
   assert.match(js, /class: `btn \$\{reasons\.length \? "btn-warn" : "btn-primary"\}`/, "a start-anyway is styled as a warning");
 });
 
@@ -133,6 +135,7 @@ test("page: live regions are the toast and the notice, not the hero that redraws
   assert.match(html, /id="notice" role="alert"/);
   assert.match(html, /id="toast" class="toast" role="status"/);
   assert.ok(!/aria-live/.test(html), "the hero would re-announce on every poll");
+  assert.match(js, /if \(msg === shownNotice\) return;\s*shownNotice = msg;\s*clear\(n\);/, "an unchanged notice is not redrawn, so the alert is not re-announced on every poll");
 });
 
 test("page: contrast holds without opacity, focus is visible, decisions carry a glyph", () => {
