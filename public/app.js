@@ -2,12 +2,17 @@
 // set only through github() and the board link, both of which accept GitHub URLs only.
 
 const NONCE = document.querySelector('meta[name="mc-nonce"]')?.content ?? "";
+const RUN_ID = document.querySelector('meta[name="mc-run"]')?.content ?? "";
 const params = new URLSearchParams(location.search);
 let projectKey = params.get("project");
 let board = null;
 let timer = null;
 let selected = null; // { kind: "part" | "decisions" | "unsorted", path }
 const staged = []; // issue numbers on the Workbench, in the order staged; kept until the page reloads
+const startErrors = new Map(); // issue number -> why its last Start was refused; shown on its staged card
+let restarted = false; // the server restarted since this page loaded, so the page's nonce is dead
+let failure = null; // { kind: "unreachable" | "noData", msg } from the last load, or null
+let receivedAt = 0; // Date.now() when `board` arrived, so its age keeps counting while the server is silent
 const DRAG_TYPE = "application/x-mc-issue";
 const MANY_STARTED = 2; // at this many issues started in one server run, or more, the Workbench warns
 
@@ -60,7 +65,9 @@ function toast(msg, ms = 2200) {
 }
 
 function chip(text, cls = "", withDot = false) {
-  return el("span", { class: `chip ${cls}`.trim() }, withDot ? el("span", { class: "dot" }) : null, text);
+  // Blocked and Decision differ by hue alone otherwise, so a decision chip always carries its glyph.
+  const label = cls === "decision" && text && !text.startsWith(GLYPH.decision) ? `${GLYPH.decision} ${text}` : text;
+  return el("span", { class: `chip ${cls}`.trim() }, withDot ? el("span", { class: "dot" }) : null, label);
 }
 
 function prChip(pr) {
@@ -113,13 +120,32 @@ function renderHud(b) {
   );
   const meta = document.getElementById("hud-meta");
   clear(meta);
-  const age = b.ageSeconds === null ? "no data" : b.ageSeconds < 5 ? "just now" : `${b.ageSeconds}s ago`;
-  meta.append(el("span", { text: `fetched ${age} · every ${b.refreshSeconds}s` }));
+  meta.append(el("span", { id: "hud-age", text: ageText(b) }));
   if (b.rateLimit) meta.append(el("span", { text: `rate limit ${b.rateLimit.remaining} left · cost ${b.rateLimit.cost}` }));
-  if (b.stale) meta.append(el("span", { class: "badge stale", text: `stale: ${b.error}` }));
+  // Staleness is said in the notice, not here, so the HUD keeps its height.
   if (b.backoff?.active) meta.append(el("span", { class: "badge backoff", text: `backing off until ${new Date(b.backoff.until).toLocaleTimeString()}` }));
   if (b.refused === "too-soon") toast("Refreshed less than 15 s ago; serving the cache");
+  if (b.refused === "too-soon-after-failure") toast("The last fetch failed less than 15 s ago; showing the cached board");
   if (b.refused === "backoff") toast("Rate-limit backoff: forced refresh refused");
+}
+
+/** The board's age now, counted on this side too, so a silent server cannot leave "just now" on screen. */
+function ageSeconds(b) {
+  return b.ageSeconds === null ? null : b.ageSeconds + Math.round((Date.now() - receivedAt) / 1000);
+}
+
+function ageText(b) {
+  const age = ageSeconds(b);
+  const when = age === null ? "no data" : age < 5 ? "just now" : age < 120 ? `${age}s ago` : `${Math.round(age / 60)} min ago`;
+  return `fetched ${when} · every ${b.refreshSeconds}s`;
+}
+
+/** Start is off while the page cannot trust what it shows: an old board, a silent server, or a dead nonce. */
+function startBlocked() {
+  if (restarted) return "Mission control restarted; reload the page to Start.";
+  if (failure) return "The server is not answering; Start is off until it does.";
+  if (board?.stale) return "The board is stale; Start is off until a fetch succeeds.";
+  return null;
 }
 
 // ── bands ───────────────────────────────────────────────────────────────────
@@ -152,6 +178,7 @@ function bandHead(title, sub) {
 function renderBands(b) {
   const app = document.getElementById("app");
   clear(app);
+  app.classList.toggle("stale", Boolean(startBlocked()));
 
   if (b.drift?.length || b.truncated?.length || b.partial?.length) {
     const strip = el("div", { class: "chip-row" });
@@ -266,7 +293,7 @@ function leafDetail(l, b) {
   if (l.truncated.length) box.append(el("div", { class: "sub", text: `truncated: ${l.truncated.join(", ")}` }));
   if (l.state === "ready") {
     // Shown on every Ready leaf: Ready only means the board has no blocking edge, which says nothing about prose.
-    box.append(el("div", { class: "sub", text: "No blocking edges on the board. Check the issue for dependencies written in prose before starting." }));
+    box.append(el("div", { class: "note", text: "No blocking edges on the board. Check the issue for dependencies written in prose before starting." }));
     if (l.commandError) box.append(el("div", { class: "reason", text: `No command: ${l.commandError}. Fix the label on GitHub.` }));
     if (l.copy) {
       // Only a Ready leaf with a command can go on the Workbench, by drag or by the button.
@@ -317,6 +344,7 @@ function stage(number) {
 }
 
 function unstage(number) {
+  startErrors.delete(number);
   const i = staged.indexOf(number);
   if (i >= 0) staged.splice(i, 1);
   if (board) {
@@ -335,9 +363,11 @@ function stagedCard(number, b) {
     const why = !l ? "It left the board or its part." : l.state !== "ready" ? `Now ${LABEL[l.state]}${l.reason ? `: ${l.reason}` : ""}.` : `No command: ${l.commandError}.`;
     box.append(el("div", { class: "reason", text: `${why} It can't start until the board says Ready again.` }));
   } else {
-    box.append(el("div", { class: "sub", text: "No blocking edges on the board. Check the issue for dependencies written in prose before starting." }));
+    box.append(el("div", { class: "note", text: "No blocking edges on the board. Check the issue for dependencies written in prose before starting." }));
     if (l.assignees.length) box.append(el("div", { class: "reason", text: `Assigned to ${l.assignees.join(", ")}: someone may already be on it.` }));
   }
+  // A refused Start stays on its card until the next Start or remove, not only in a toast that fades.
+  if (startErrors.has(number)) box.append(el("div", { class: "reason start-error", text: `Last Start refused: ${startErrors.get(number)}` }));
   const actions = el("div", { class: "actions" });
   if (ready && l.model) actions.append(chip(`model ${l.model}${l.modelSource === "label" ? " (label)" : ""}`, "muted"));
   if (ready && b.start?.enabled) {
@@ -349,7 +379,8 @@ function stagedCard(number, b) {
     if (l.assignees.length) reasons.push(`Assigned to ${l.assignees.join(", ")}`);
     const confirm = { started: Boolean(startedAt), assigned: l.assignees.length > 0 };
     const label = reasons.length ? `${reasons.join(" · ")} · start anyway?` : `Start #${number}`;
-    actions.append(el("button", { type: "button", class: "btn btn-primary", text: label, onclick: (e) => startIssue(number, e.currentTarget, confirm) }));
+    const blocked = startBlocked();
+    actions.append(el("button", { type: "button", class: `btn ${reasons.length ? "btn-warn" : "btn-primary"}`, text: label, disabled: Boolean(blocked), title: blocked, onclick: (e) => startIssue(number, e.currentTarget, confirm) }));
   } else if (ready) {
     actions.append(el("button", { type: "button", class: "btn btn-primary", text: "Copy prompt", onclick: () => copyLine(l.copy) }));
   }
@@ -450,20 +481,27 @@ async function startIssue(number, button, confirm = {}) {
       body: JSON.stringify({ project: asked, number, confirm }),
     });
     const data = await res.json().catch(() => ({}));
-    if (asked !== projectKey) return toast(`#${number} (${asked}): ${res.ok ? "started" : data.error ?? res.status}`); // switched meanwhile
+    if (asked !== projectKey) return toast(`#${number} (${asked}): ${res.ok ? "started" : data.error ?? res.status}`, 6000); // switched meanwhile
     if (res.ok) {
       unstage(number);
-      toast(`Started #${number}${data.model ? ` on ${data.model}` : ""} in a new Ghostty window`);
+      toast(`Started #${number}${data.model ? ` on ${data.model}` : ""} in a new Ghostty window`, 6000);
       await load(false);
     } else if (res.status === 409 && data.requiresConfirm) {
       // A reason the card didn't show. Nothing is remembered as confirmed: the reload puts it on the label.
       toast(`Not started: #${number} changed since the card was drawn. Check its label, then press Start again.`, 6000);
       await load(false);
     } else {
-      toast(`Start refused: ${data.error ?? res.status}`);
+      if (res.status === 403 && data.runId && data.runId !== RUN_ID) restarted = true;
+      startErrors.set(number, data.error ?? `HTTP ${res.status}`);
+      toast(`Start refused: ${data.error ?? res.status}`, 6000);
+      // A 409 means the board moved (no longer Ready, a bad label, a missing checkout): redraw the card from fresh data.
+      if (res.status === 409 || restarted) await load(false);
+      else if (board) renderWorkbench(board);
     }
   } catch (e) {
-    toast(`Start failed: ${e.message}`);
+    startErrors.set(number, e.message);
+    toast(`Start failed: ${e.message}`, 6000);
+    if (board) renderWorkbench(board);
   } finally {
     button.disabled = false;
   }
@@ -471,10 +509,41 @@ async function startIssue(number, button, confirm = {}) {
 
 // ── load loop ───────────────────────────────────────────────────────────────
 
-function showNotice(msg) {
+/** One notice for whatever the page cannot trust right now, most serious first. It is an alert region, so it holds
+ *  no ticking numbers: the board's age lives in the HUD. */
+function renderNotice() {
   const n = document.getElementById("notice");
-  n.textContent = msg;
+  clear(n);
+  let msg = null;
+  if (restarted) msg = "Mission control restarted since this page loaded, so Start needs a fresh page. Reloading empties the Workbench.";
+  else if (failure?.kind === "unreachable") msg = `The local server is not answering (${failure.msg}). Is mission control still running? It is tried again every ${board?.refreshSeconds ?? 60} s.`;
+  else if (failure) msg = `No board data: ${failure.msg}`;
+  else if (board?.stale) msg = `GitHub could not be read (${board.error}), so this is the last board read; its age is at the top right. Start is off until a fetch succeeds.`;
   n.hidden = !msg;
+  if (!msg) return;
+  n.append(el("span", { text: msg }));
+  if (restarted) n.append(el("button", { type: "button", class: "btn", text: "Reload", onclick: () => location.reload() }));
+}
+
+/** With no board at all, the main area says what is wrong instead of "Reading the board…" under an error. */
+function renderEmpty(msg) {
+  const app = document.getElementById("app");
+  clear(app);
+  app.append(el("div", { class: "empty-state" }, el("h2", { text: "No board to show" }), el("p", { text: msg }), el("p", { class: "sub", text: "Press refresh (r) to try now." })));
+}
+
+/** Record a failed load: keep whatever board is on screen, but mark it untrustworthy and keep polling. */
+function loadFailed(kind, msg) {
+  failure = { kind, msg };
+  renderNotice();
+  if (board) {
+    renderBands(board);
+    renderWorkbench(board);
+    if (selected?.kind === "part") reopenSelected(board);
+  } else {
+    renderEmpty(msg);
+  }
+  schedule(board?.refreshSeconds ?? 60);
 }
 
 async function load(force = false) {
@@ -487,20 +556,21 @@ async function load(force = false) {
     res = await fetch(`/api/board?${q}`);
   } catch (e) {
     if (asked !== projectKey) return; // the project was switched while this was in flight
-    showNotice(`The local server is not answering (${e.message}). Is mission control still running?`);
-    schedule(board?.refreshSeconds ?? 60); // keep polling; the server may come back
+    loadFailed("unreachable", e.message); // keeps polling; the server may come back
     return;
   }
   const data = await res.json().catch(() => ({}));
   if (asked !== projectKey) return; // the project was switched while this was in flight; its own load follows
+  if (data.runId && RUN_ID && data.runId !== RUN_ID) restarted = true;
   if (!res.ok) {
-    showNotice(`No board data: ${data.error ?? res.status}`);
     document.getElementById("hud-project").textContent = data.project?.title ?? projectKey ?? "";
-    schedule(board?.refreshSeconds ?? 60);
+    loadFailed("noData", String(data.error ?? res.status));
     return;
   }
-  showNotice("");
+  failure = null;
   board = data;
+  receivedAt = Date.now();
+  renderNotice();
   projectKey = data.project.key;
   document.title = `${data.project.title} · Mission control`;
   renderHud(data);
@@ -532,8 +602,18 @@ async function initProjects() {
         history.replaceState(null, "", `?project=${encodeURIComponent(projectKey)}`);
         // Issue numbers are per repo: a staged #130 must not reappear as another project's #130.
         staged.length = 0;
+        startErrors.clear();
         board = null;
+        failure = null;
         clear(document.getElementById("workbench"));
+        // The old project's bands and totals must not sit under the new project's name while it loads.
+        clear(document.getElementById("hud-hero"));
+        clear(document.getElementById("hud-meta"));
+        const app = document.getElementById("app");
+        clear(app);
+        app.classList.remove("stale");
+        app.append(el("p", { class: "boot", text: "Reading the board…" }));
+        renderNotice();
         closePanel();
         load(true);
       });
@@ -549,6 +629,10 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closePanel();
   if (e.key === "r" && !e.metaKey && !e.ctrlKey) load(true);
 });
+setInterval(() => {
+  const age = document.getElementById("hud-age");
+  if (age && board) age.textContent = ageText(board);
+}, 5000);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) load(false); // also recovers a page whose first load failed while hidden
 });

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="mc-nonce" content="{{NONCE}}">
+<meta name="mc-run" content="{{RUN_ID}}">
 <meta name="color-scheme" content="dark">
 <title>Mission control</title>
 <link rel="stylesheet" href="/app.css">
@@ -17,13 +18,13 @@
     <a class="hud-board" id="hud-board" target="_blank" rel="noopener" hidden>board ↗</a>
     <select id="hud-switch" class="hud-switch" hidden aria-label="Project"></select>
   </div>
-  <div class="hud-hero" id="hud-hero" aria-live="polite"></div>
+  <div class="hud-hero" id="hud-hero"></div>
   <div class="hud-meta" id="hud-meta"></div>
   <div class="hud-actions">
     <button id="refresh" class="btn" type="button" title="Refresh now (r)">refresh</button>
   </div>
 </header>
-<div class="notice" id="notice" hidden></div>
+<div class="notice" id="notice" role="alert" hidden></div>
 <main id="app" class="app">
   <p class="boot">Reading the board…</p>
 </main>
@@ -35,7 +36,7 @@
   </div>
   <div id="panel-body" class="panel-body"></div>
 </aside>
-<div id="toast" class="toast" hidden></div>
+<div id="toast" class="toast" role="status" hidden></div>
 <script type="module" src="/app.js"></script>
 </body>
 </html>

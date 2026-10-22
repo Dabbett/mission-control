@@ -180,11 +180,13 @@ test("server start: the full happy path refetches, launches and reports the mark
 });
 
 test("server start: cross-site, wrong origin, missing nonce, wrong content type", async (t) => {
-  const { post, good, launches } = await app(t);
+  const { a, post, good, launches } = await app(t);
   assert.equal((await post({ project: "example", number: 6 }, { ...good, "sec-fetch-site": "cross-site" })).status, 403);
   assert.equal((await post({ project: "example", number: 6 }, { ...good, "sec-fetch-site": "none" })).status, 403);
   assert.equal((await post({ project: "example", number: 6 }, { ...good, origin: "http://evil.test" })).status, 403);
-  assert.equal((await post({ project: "example", number: 6 }, { ...good, "x-mc-nonce": "wrong" })).status, 403);
+  const wrong = await post({ project: "example", number: 6 }, { ...good, "x-mc-nonce": "wrong" });
+  assert.equal(wrong.status, 403);
+  assert.equal(wrong.json.runId, a.runId, "a dead nonce comes back with the live run id, so the page can offer a reload");
   const noNonce = { ...good };
   delete noNonce["x-mc-nonce"];
   assert.equal((await post({ project: "example", number: 6 }, noNonce)).status, 403);

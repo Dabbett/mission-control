@@ -61,9 +61,10 @@ test("page: fetches only same-origin relative API paths", () => {
 test("page: every Ready leaf carries the prose-dependency note, and polling survives a failed load", () => {
   assert.ok(js.includes("No blocking edges on the board."));
   assert.ok(!/else if \(l\.state === "ready"\)/.test(js), "the note must not be gated on the copy line");
-  assert.match(js, /if \(l\.state === "ready"\) \{\s*\/\/[^\n]*\n\s*box\.append\(el\("div", \{ class: "sub", text: "No blocking edges/);
-  const schedules = js.match(/schedule\(board\?\.refreshSeconds \?\? 60\)/g) ?? [];
-  assert.equal(schedules.length, 2, "both failure branches reschedule");
+  assert.match(js, /if \(l\.state === "ready"\) \{\s*\/\/[^\n]*\n\s*box\.append\(el\("div", \{ class: "note", text: "No blocking edges/);
+  assert.match(js, /function loadFailed\(kind, msg\) \{[\s\S]*?schedule\(board\?\.refreshSeconds \?\? 60\);\n\}/, "a failed load reschedules");
+  assert.match(js, /catch \(e\) \{\s*if \(asked !== projectKey\) return;[^\n]*\n\s*loadFailed\("unreachable"/, "an unreachable server goes through it");
+  assert.match(js, /if \(!res\.ok\) \{[\s\S]{0,160}loadFailed\("noData"/, "a 502 goes through it");
   assert.match(js, /visibilitychange[\s\S]{0,120}if \(!document\.hidden\) load\(false\)/, "a visible tab reloads even when no board was ever loaded");
 });
 
@@ -81,7 +82,8 @@ test("page: only a Ready leaf with a command is draggable; others say why", () =
 });
 
 test("page: switching projects empties the Workbench", () => {
-  assert.match(js, /sel\.addEventListener\("change", \(\) => \{[\s\S]{0,400}staged\.length = 0;\s*board = null;\s*clear\(document\.getElementById\("workbench"\)\);/, "old cards leave the screen at once");
+  assert.match(js, /sel\.addEventListener\("change", \(\) => \{[\s\S]{0,400}staged\.length = 0;\s*startErrors\.clear\(\);\s*board = null;\s*failure = null;\s*clear\(document\.getElementById\("workbench"\)\);/, "old cards leave the screen at once");
+  assert.match(js, /clear\(document\.getElementById\("hud-hero"\)\);\s*clear\(document\.getElementById\("hud-meta"\)\);\s*const app = document\.getElementById\("app"\);\s*clear\(app\);/, "so do the old bands and totals");
   assert.match(js, /if \(asked !== projectKey\) return;/, "a late answer for the old project is dropped");
 });
 
@@ -104,4 +106,43 @@ test("page: Start lives only on a Ready staged card, next to the prose-dependenc
   assert.ok(!js.includes("startIssue(l.number"), "no Start in the drill-in");
   assert.match(js, /function stagedCard[\s\S]*?const ready = l && l\.state === "ready" && l\.copy;[\s\S]*?No blocking edges on the board\.[\s\S]*?if \(ready && b\.start\?\.enabled\)/);
   assert.match(js, /MANY_STARTED = 2/);
+});
+
+test("page: a restarted server is detected from the run id, and the notice offers a reload", () => {
+  assert.ok(html.includes('<meta name="mc-run" content="{{RUN_ID}}">'));
+  assert.match(js, /if \(data\.runId && RUN_ID && data\.runId !== RUN_ID\) restarted = true;/, "every board answer is compared");
+  assert.match(js, /res\.status === 403 && data\.runId && data\.runId !== RUN_ID\) restarted = true;/, "so is a refused Start");
+  assert.match(js, /if \(restarted\) n\.append\(el\("button", \{[^}]*text: "Reload", onclick: \(\) => location\.reload\(\)/);
+});
+
+test("page: Start is off while the board is stale, the server is silent, or the nonce is dead", () => {
+  assert.match(js, /function startBlocked\(\) \{\s*if \(restarted\)[^\n]*\n\s*if \(failure\)[^\n]*\n\s*if \(board\?\.stale\)/);
+  assert.match(js, /const blocked = startBlocked\(\);\s*actions\.append\(el\("button", \{[^\n]*?disabled: Boolean\(blocked\), title: blocked, onclick: \(e\) => startIssue/);
+  assert.match(js, /app\.classList\.toggle\("stale", Boolean\(startBlocked\(\)\)\)/, "and the bands say so");
+  assert.match(js, /b\.ageSeconds \+ Math\.round\(\(Date\.now\(\) - receivedAt\) \/ 1000\)/, "the age keeps counting on the page");
+});
+
+test("page: a refused Start stays on its card, toasts for 6 s, and a 409 redraws from fresh data", () => {
+  assert.match(js, /startErrors\.set\(number, data\.error \?\? `HTTP \$\{res\.status\}`\);\s*toast\(`Start refused: [^`]*`, 6000\);\s*\/\/[^\n]*\n\s*if \(res\.status === 409 \|\| restarted\) await load\(false\);/);
+  assert.match(js, /if \(startErrors\.has\(number\)\) box\.append/);
+  assert.match(js, /function unstage\(number\) \{\s*startErrors\.delete\(number\);/);
+  assert.match(js, /class: `btn \$\{reasons\.length \? "btn-warn" : "btn-primary"\}`/, "a start-anyway is styled as a warning");
+});
+
+test("page: live regions are the toast and the notice, not the hero that redraws every poll", () => {
+  assert.match(html, /id="notice" role="alert"/);
+  assert.match(html, /id="toast" class="toast" role="status"/);
+  assert.ok(!/aria-live/.test(html), "the hero would re-announce on every poll");
+});
+
+test("page: contrast holds without opacity, focus is visible, decisions carry a glyph", () => {
+  assert.match(css, /--ink-3: #7d91a6;/);
+  assert.match(css, /--st-none: #7a8a9a;/);
+  assert.match(css, /--line-strong: rgba\(120, 170, 220, 0\.56\);/);
+  const opacity = css.match(/opacity:[^;]+;/g) ?? [];
+  assert.deepEqual(opacity, ["opacity: 0.5;"], "only disabled buttons fade");
+  assert.match(css, /\.btn:disabled \{ opacity: 0\.5;/);
+  assert.match(css, /\.card:focus-visible \{[^}]*outline: 2px solid/);
+  assert.ok(!/\.card:[a-z-]+, \.card:focus-visible \{[^}]*outline: none/.test(css), "no outline: none on focus");
+  assert.match(js, /cls === "decision" && text && !text\.startsWith\(GLYPH\.decision\) \? `\$\{GLYPH\.decision\} \$\{text\}`/);
 });
