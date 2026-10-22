@@ -28,7 +28,7 @@ Needs Node 22 and a logged-in `gh` (`gh auth login`). No dependencies to install
 - **Spotlight, Launchpad or the Dock:** "MC Dashboard" in `~/Applications` (named so it doesn't collide with macOS's own Mission Control).
 - **Raycast and a hotkey:** Raycast Settings → Extensions → Script Commands → Add Directories → this repo's `raycast/` folder, then assign a hotkey to "Mission Control". "Stop Mission Control" is there too.
 
-The background server logs method, path and status to `~/.local/state/mission-control/server.log`, and `mc` writes its own failures there too. `MC_PORT`, `MC_PROJECT` and `MC_CONFIG_DIR` change the port, project and config directory when `mc` runs from a terminal; with `MC_PROJECT` unset the server opens its only project. The app bakes in the values in force at `mc install` time, and the Raycast scripts use the defaults. If the repo moves, run `mc install` again.
+The background server logs method, path and status to `~/.local/state/mission-control/server.log`, and `mc` writes its own failures there too. `MC_PORT`, `MC_PROJECT` and `MC_CONFIG_DIR` change the port, project and config directory when `mc` runs from a terminal; with `MC_PROJECT` unset the server opens its only project. The app bakes in the values in force at `mc install` time, and the Raycast scripts use the defaults. If the repo moves, run `mc install` again. Two launches at once share one server through `~/.local/state/mission-control/start.lock`, which records its owner's pid; a lock whose owner has died (a crash, a force quit) is removed on the next start, and a live one that never brings the server up is named in the error.
 
 ## Principles
 
