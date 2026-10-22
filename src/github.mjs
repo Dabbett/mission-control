@@ -1,9 +1,9 @@
 // The only path to GitHub. One document, one function, read-only by construction and by test.
 import { readFileSync } from "node:fs";
-import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { assertReadOnly } from "./readonly.mjs";
+import { getToken as defaultGetToken, forgetToken } from "./token.mjs";
 
 const DOCUMENT = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "board.graphql"), "utf8");
 assertReadOnly(DOCUMENT);
@@ -27,24 +27,6 @@ function splitErrors(errors) {
   return { partial, fatal };
 }
 
-let cachedToken = null;
-
-function defaultGetToken() {
-  if (process.env.MISSION_CONTROL_TOKEN) return Promise.resolve(process.env.MISSION_CONTROL_TOKEN);
-  if (cachedToken) return Promise.resolve(cachedToken);
-  return new Promise((resolve, reject) => {
-    execFile("gh", ["auth", "token"], { timeout: 10_000 }, (err, stdout) => {
-      const token = (stdout || "").trim();
-      if (err || !token) {
-        reject(new Error("gh is not logged in. Run `gh auth login`, or set MISSION_CONTROL_TOKEN to a read-only token."));
-        return;
-      }
-      cachedToken = token;
-      resolve(token);
-    });
-  });
-}
-
 /**
  * Fetch every item of one GitHub Project with the committed query.
  * @param {{org: string, projectNumber: number}} project
@@ -60,6 +42,9 @@ export async function fetchBoard(project, deps = {}) {
   let rateLimit = null;
   let title = null;
   let url = null;
+  let projectId = null;
+  let statusField = null;
+  let viewer = null;
   let pages = 0;
   const partial = [];
   const signal = AbortSignal.timeout(TIMEOUT_MS); // one deadline for the whole board, however many pages
@@ -80,7 +65,7 @@ export async function fetchBoard(project, deps = {}) {
         signal,
       });
       if (res.status === 401) {
-        cachedToken = null;
+        forgetToken();
         throw new Error("GitHub rejected the token (401). Run `gh auth login` again.");
       }
       if (!res.ok) throw new Error(`GitHub returned HTTP ${res.status}`);
@@ -100,6 +85,10 @@ export async function fetchBoard(project, deps = {}) {
     if (!p) throw new Error(`Project ${project.org}/${project.projectNumber} not found or not readable`);
     title = p.title;
     url = p.url;
+    // What the opt-in claim needs: who is asking, and which project, field and options to write.
+    projectId = p.id ?? null;
+    statusField = p.statusField?.id ? { id: p.statusField.id, options: Array.isArray(p.statusField.options) ? p.statusField.options : [] } : null;
+    viewer = json.data.viewer?.id ? { id: json.data.viewer.id, login: json.data.viewer.login } : null;
     rateLimit = json.data.rateLimit ?? rateLimit;
     nodes.push(...(p.items?.nodes ?? []));
     after = p.items?.pageInfo?.hasNextPage ? p.items.pageInfo.endCursor : null;
@@ -107,5 +96,5 @@ export async function fetchBoard(project, deps = {}) {
     if (after && pages >= MAX_PAGES) throw new Error("Project has more pages than this tool will read");
   } while (after);
 
-  return { title, url, nodes, rateLimit, partial, fetchedAt: new Date().toISOString() };
+  return { title, url, projectId, statusField, viewer, nodes, rateLimit, partial, fetchedAt: new Date().toISOString() };
 }

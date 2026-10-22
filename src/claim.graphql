@@ -1,0 +1,10 @@
+# The opt-in claim at Start (start.claim "dashboard"): assign the viewer and set the issue's Status. src/claim.mjs
+# sends it, and only after a Start passed every check; src/readonly.mjs refuses any other root field at load.
+mutation Claim($issueId: ID!, $viewerId: ID!, $projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+  addAssigneesToAssignable(input: { assignableId: $issueId, assigneeIds: [$viewerId] }) {
+    assignable { ... on Issue { assignees(first: 20) { nodes { login } } } }
+  }
+  updateProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId, value: { singleSelectOptionId: $optionId } }) {
+    projectV2Item { id }
+  }
+}

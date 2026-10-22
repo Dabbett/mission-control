@@ -1,0 +1,12 @@
+# Undo of the claim after a failed launch or a lost race: each field runs only for the part the claim changed.
+mutation Unclaim($issueId: ID!, $viewerId: ID!, $projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!, $removeAssignee: Boolean!, $restoreStatus: Boolean!, $clearStatus: Boolean!) {
+  removeAssigneesFromAssignable(input: { assignableId: $issueId, assigneeIds: [$viewerId] }) @include(if: $removeAssignee) {
+    clientMutationId
+  }
+  updateProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId, value: { singleSelectOptionId: $optionId } }) @include(if: $restoreStatus) {
+    projectV2Item { id }
+  }
+  clearProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId }) @include(if: $clearStatus) {
+    projectV2Item { id }
+  }
+}

@@ -20,7 +20,7 @@ const KEY_RE = /^[a-z0-9][a-z0-9-]*$/;
 const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const MODEL_RE = /^[a-z0-9][a-z0-9.-]*$/;
 const KNOWN_KEYS = ["key", "title", "org", "projectNumber", "repo", "localPath", "refreshSeconds", "status", "decisionType", "epicLabel", "onHoldPattern", "prompt", "command", "start", "model", "layers"];
-const START_KEYS = ["enabled", "terminal"];
+const START_KEYS = ["enabled", "terminal", "claim"];
 const MODEL_KEYS = ["default", "allowed", "labelPrefix"];
 const LAYER_KEYS = ["name", "groups"];
 const GROUP_KEYS = ["name", "epic", "phone", "parts"];
@@ -152,8 +152,13 @@ export function validateProject(raw, source = "project") {
   const start = raw.start ?? {};
   if (!start || typeof start !== "object") fail(source, "start must be an object");
   checkKeys(start, START_KEYS, "start", source);
-  p.start = { enabled: start.enabled === true, terminal: start.terminal ?? "ghostty" };
+  p.start = { enabled: start.enabled === true, terminal: start.terminal ?? "ghostty", claim: start.claim ?? "agent" };
   if (p.start.terminal !== "ghostty") fail(source, `start.terminal "${p.start.terminal}" is not supported`);
+  // "agent": the prompt asks the session to claim the issue (best-effort). "dashboard": Start claims it on GitHub
+  // before launching (ADR 0002), the one write this tool makes.
+  if (p.start.claim !== "agent" && p.start.claim !== "dashboard") fail(source, 'start.claim must be "agent" or "dashboard"');
+  if (p.start.claim === "dashboard" && !p.start.enabled) fail(source, 'start.claim "dashboard" needs start.enabled: the claim happens at Start');
+  if (p.start.claim === "dashboard" && !st.inProgress.length) fail(source, 'start.claim "dashboard" needs a name in status.inProgress: it is the Status the claim sets');
   if (p.start.enabled && p.command[0] !== "claude") fail(source, 'start.enabled needs command[0] to be "claude"; the launcher runs nothing else');
   if (p.start.enabled) {
     const flag = p.command.find((a) => DANGEROUS_FLAGS.test(a));

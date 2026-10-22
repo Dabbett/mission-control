@@ -72,6 +72,8 @@ export function normalize(board, project) {
       const closedBy = connection(c.closedByPullRequestsReferences, "closedByPullRequests", truncated);
       items.set(c.number, {
         number: c.number,
+        nodeId: typeof c.id === "string" ? c.id : null, // the issue, for the opt-in claim's assignee write
+        itemId: typeof node.id === "string" ? node.id : null, // its row on the board, for the Status write
         title: c.title ?? "",
         state: c.state,
         stateReason: c.stateReason ?? null,
@@ -93,7 +95,10 @@ export function normalize(board, project) {
       drafts.push({ title: c.title ?? "", status });
     }
   }
-  return { items, prItems, drafts, rateLimit: board.rateLimit ?? null, title: board.title ?? null, url: board.url ?? null, fetchedAt: board.fetchedAt ?? null };
+  return {
+    items, prItems, drafts, rateLimit: board.rateLimit ?? null, title: board.title ?? null, url: board.url ?? null, fetchedAt: board.fetchedAt ?? null,
+    projectId: board.projectId ?? null, statusField: board.statusField ?? null, viewer: board.viewer ?? null,
+  };
 }
 
 function externalLabels(labels) {

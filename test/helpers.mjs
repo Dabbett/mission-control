@@ -45,3 +45,14 @@ export function http(port, path, { method = "GET", headers = {}, body = null, ho
     req.end();
   });
 }
+
+/** The fixture with the ids a claim needs, as the live board query returns them. */
+export function claimableBoard(board = fixtureBoard()) {
+  for (const n of board.nodes) if (n.content?.__typename === "Issue") Object.assign(n, { id: `PVTI_${n.content.number}` }), (n.content.id = `I_${n.content.number}`);
+  return {
+    ...board,
+    projectId: "PVT_1",
+    viewer: { id: "U_me", login: "me" },
+    statusField: { id: "F_status", options: [{ id: "O_todo", name: "Todo" }, { id: "O_prog", name: "In progress" }, { id: "O_rev", name: "In review" }, { id: "O_done", name: "Done" }] },
+  };
+}
