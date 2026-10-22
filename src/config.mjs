@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { DANGEROUS_FLAGS } from "./claude-flags.mjs";
 import { normStatus, STATUS_GROUPS } from "./status.mjs";
+import { partPath } from "./model.mjs";
 
 export { normStatus, STATUS_GROUPS };
 
@@ -220,11 +221,6 @@ export function validateProject(raw, source = "project") {
   }
   p.epics = [...epics];
   return p;
-}
-
-/** A part's path on the page; src/model.mjs builds the same string. */
-export function partPath(layer, group, part) {
-  return `${layer} / ${group ? group + " / " : ""}${part}`;
 }
 
 /** Load every *.json file in the config dir into a Map keyed by project key, in file-name order. */

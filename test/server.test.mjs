@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { connect } from "node:net";
-import { createApp, FORCE_MIN_SECONDS, REQUEST_TIMEOUT_MS, HEADERS_TIMEOUT_MS } from "../src/server.mjs";
+import { createApp, FORCE_MIN_SECONDS, REQUEST_TIMEOUT_MS, HEADERS_TIMEOUT_MS, CHECK_EVERY_MS } from "../src/server.mjs";
 import { fetchBoard as realFetchBoard } from "../src/github.mjs";
 import { exampleProjects, fixtureBoard, http } from "./helpers.mjs";
 
@@ -140,6 +140,7 @@ test("a request that never finishes is cut off in seconds, not Node's five minut
   assert.equal(a.server.requestTimeout, REQUEST_TIMEOUT_MS);
   assert.equal(a.server.headersTimeout, HEADERS_TIMEOUT_MS);
   assert.ok(REQUEST_TIMEOUT_MS <= 15_000 && HEADERS_TIMEOUT_MS <= REQUEST_TIMEOUT_MS);
+  assert.ok(REQUEST_TIMEOUT_MS + CHECK_EVERY_MS <= 20_000, "the README's limit: cut off within about 20 s at most");
 });
 
 test("a request that stalls halfway through its body is answered 408 and its socket closed", async (t) => {
@@ -160,6 +161,8 @@ test("a request that stalls halfway through its body is answered 408 and its soc
   });
   assert.match(reply, /^HTTP\/1\.1 408/);
   assert.ok(Date.now() - t0 < 2000, `closed after ${Date.now() - t0} ms`);
+  for (let i = 0; i < 20 && !a.logs.some((l) => l.startsWith("POST /api/start")); i++) await new Promise((r) => setTimeout(r, 25));
+  assert.deepEqual(a.logs.filter((l) => l.startsWith("POST /api/start")), ["POST /api/start 408"], "the handler settles and logs what the client saw");
 });
 
 test("/api/board: concurrent requests share one fetch", async (t) => {

@@ -29,7 +29,7 @@ test("launch: refuses anything but claude, relative or missing cwd, and bad usag
 
 test("launch: refuses flags that take the human out of the session, whatever the config said", () => {
   const dir = mkdtempSync(join(tmpdir(), "mc-launch-"));
-  for (const flag of ["--dangerously-skip-permissions", "--permission-mode=bypassPermissions", "--permission-mode", "-p", "--print", "--allowedTools=Bash", "--allowed-tools", "--settings", "--setting-sources=project"]) {
+  for (const flag of ["--dangerously-skip-permissions", "--permission-mode=bypassPermissions", "--permission-mode", "-p", "--print", "--allowedTools=Bash", "--allowed-tools", "--settings", "--setting-sources=project", "--allow-dangerously-skip-permissions", "-cp"]) {
     const r = run(["--cwd", dir, "--", "claude", "-w", "issue-1", flag, "x"]);
     assert.notEqual(r.status, 0, flag);
     assert.match(r.stderr, new RegExp(`refusing ${flag.replace(/[-=]/g, "\\$&")}`), flag);

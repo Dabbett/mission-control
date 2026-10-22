@@ -196,7 +196,7 @@ test("validation: unknown keys inside status, start, model, layers, groups and p
 });
 
 test("validation: with Start on, flags that take the human out of the session are refused; with Start off, Copy stays free", () => {
-  for (const flag of ["--dangerously-skip-permissions", "--permission-mode", "--permission-mode=bypassPermissions", "-p", "--print", "--allowedTools", "--allowedTools=Bash", "--settings", "--settings={}", "--setting-sources", "--setting-sources=project"]) {
+  for (const flag of ["--dangerously-skip-permissions", "--permission-mode", "--permission-mode=bypassPermissions", "-p", "--print", "--allowedTools", "--allowedTools=Bash", "--settings", "--settings={}", "--setting-sources", "--setting-sources=project", "--allow-dangerously-skip-permissions", "-cp", "-pc"]) {
     assert.throws(() => validateProject(base({ start: { enabled: true }, command: ["claude", flag, "{prompt}"] })), /takes the human out of the session/, flag);
     assert.doesNotThrow(() => validateProject(base({ command: ["claude", flag, "{prompt}"] })), `${flag} with Start off`);
   }

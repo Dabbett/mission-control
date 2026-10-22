@@ -18,8 +18,10 @@ export const FORCE_MIN_SECONDS = 15;
 export const BACKOFF_REMAINING = 500;
 export const MAX_BODY_BYTES = 4096;
 // Node's defaults (5 minutes for a request, 1 for its headers) let a client that never finishes its body park a socket.
+// Node looks for overdue requests only every CHECK_EVERY_MS, so a stalled request lives at most the sum of the two.
 export const REQUEST_TIMEOUT_MS = 15_000;
 export const HEADERS_TIMEOUT_MS = 10_000;
+export const CHECK_EVERY_MS = 2_000;
 
 const SECURITY_HEADERS = {
   "content-security-policy": "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
@@ -45,8 +47,8 @@ function json(res, status, obj) {
  * @param {() => number} [deps.now]
  * @param {(line: string) => void} [deps.log]
  * @param {object} [deps.starter]   { start(project, number, opts) } from start.mjs; absent = Start disabled everywhere
- * @param {{ requestMs?: number, headersMs?: number, checkEveryMs?: number }} [deps.timeouts]   test seam; Node checks
- *   for overdue requests only every checkEveryMs (its default is 30 s), so a test shortens all three
+ * @param {{ requestMs?: number, headersMs?: number, checkEveryMs?: number }} [deps.timeouts]   test seam, so a test
+ *   can shorten all three
  */
 export function createApp(deps) {
   const { projects, fetchBoard } = deps;
@@ -175,7 +177,13 @@ export function createApp(deps) {
         chunks.push(c);
       });
       req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-      req.on("error", reject);
+      // A request cut off mid-body (Node's request timeout answers 408 and destroys the socket) never ends: it
+      // errors as aborted, then closes. Either way it settles as 408, so the log shows what the client saw.
+      const cutOff = () => Object.assign(new Error("request not completed"), { status: 408 });
+      req.on("error", (e) => reject(req.complete ? e : cutOff()));
+      req.on("close", () => {
+        if (!req.complete) reject(cutOff());
+      });
     });
   }
 
@@ -190,6 +198,10 @@ export function createApp(deps) {
     try {
       body = JSON.parse(await readBody(req));
     } catch (e) {
+      if (e.status === 408) {
+        res.statusCode = 408; // Node has already answered and closed the socket; this is for the log line only
+        return;
+      }
       return json(res, e.status === 413 ? 413 : 400, { error: e.status === 413 ? "body too large" : "invalid JSON" });
     }
     if (!body || typeof body !== "object") return json(res, 400, { error: "invalid body" });
@@ -211,7 +223,7 @@ export function createApp(deps) {
   }
 
   const timeouts = deps.timeouts ?? {};
-  const server = createServer({ connectionsCheckingInterval: timeouts.checkEveryMs ?? 30_000 }, async (req, res) => {
+  const server = createServer({ connectionsCheckingInterval: timeouts.checkEveryMs ?? CHECK_EVERY_MS }, async (req, res) => {
     const port = server.address()?.port;
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     const done = (status) => log(`${req.method} ${url.pathname} ${status}`);
