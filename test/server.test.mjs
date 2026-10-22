@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createApp, FORCE_MIN_SECONDS } from "../src/server.mjs";
+import { createApp, FORCE_MIN_SECONDS, REQUEST_TIMEOUT_MS, HEADERS_TIMEOUT_MS } from "../src/server.mjs";
 import { fetchBoard as realFetchBoard } from "../src/github.mjs";
 import { exampleProjects, fixtureBoard, http } from "./helpers.mjs";
 
@@ -66,6 +66,8 @@ test("static allowlist: three files, nothing else, no traversal", async (t) => {
   assert.match(index.headers["content-type"], /text\/html/);
   assert.ok(index.text.includes(`<meta name="mc-nonce" content="${a.nonce}">`));
   assert.ok(!index.text.includes("{{NONCE}}"));
+  assert.ok(index.text.includes(`<meta name="mc-run" content="${a.runId}">`));
+  assert.ok(!index.text.includes("{{RUN_ID}}"));
   assert.match((await http(a.port, "/app.js")).headers["content-type"], /text\/javascript/);
   assert.match((await http(a.port, "/app.css")).headers["content-type"], /text\/css/);
   for (const p of ["/index.html", "/../package.json", "/%2e%2e/package.json", "/public/index.html", "/app.js/", "/App.js", "/projects/example.json", "/.git/config"]) {
@@ -107,6 +109,36 @@ test("/api/board: a forced refresh is honoured only after the floor", async (t) 
   const later = await http(a.port, "/api/board?project=example&force=1");
   assert.equal(later.json.refused, null);
   assert.equal(a.calls.length, 2);
+});
+
+test("/api/board: a forced refresh right after a failed fetch says so, instead of calling a minute-old cache fresh", async (t) => {
+  const a = await app(t, { boards: [fixtureBoard(), new Error("GitHub returned HTTP 502")] });
+  await http(a.port, "/api/board?project=example");
+  a.clock.advance(61_000);
+  assert.equal((await http(a.port, "/api/board?project=example")).json.stale, true);
+  a.clock.advance(5_000);
+  const r = await http(a.port, "/api/board?project=example&force=1");
+  assert.equal(r.json.refused, "too-soon-after-failure");
+  assert.equal(r.json.ageSeconds, 66);
+  assert.equal(a.calls.length, 2);
+});
+
+test("every response carries this run's id, which changes with each start of the server", async (t) => {
+  const a = await app(t);
+  const b = await app(t);
+  assert.match(a.runId, /^[0-9a-f]{16}$/);
+  assert.notEqual(a.runId, b.runId);
+  assert.notEqual(a.runId, a.nonce);
+  assert.equal((await http(a.port, "/api/board?project=example")).json.runId, a.runId);
+  const down = await app(t, { boards: [new Error("down")] });
+  assert.equal((await http(down.port, "/api/board?project=example")).json.runId, down.runId, "the 502 carries it too");
+});
+
+test("a request that never finishes is cut off in seconds, not Node's five minutes", async (t) => {
+  const a = await app(t);
+  assert.equal(a.server.requestTimeout, REQUEST_TIMEOUT_MS);
+  assert.equal(a.server.headersTimeout, HEADERS_TIMEOUT_MS);
+  assert.ok(REQUEST_TIMEOUT_MS <= 15_000 && HEADERS_TIMEOUT_MS <= REQUEST_TIMEOUT_MS);
 });
 
 test("/api/board: concurrent requests share one fetch", async (t) => {

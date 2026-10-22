@@ -17,6 +17,9 @@ const STATIC = new Map([
 export const FORCE_MIN_SECONDS = 15;
 export const BACKOFF_REMAINING = 500;
 export const MAX_BODY_BYTES = 4096;
+// Node's defaults (5 minutes for a request, 1 for its headers) let a client that never finishes its body park a socket.
+export const REQUEST_TIMEOUT_MS = 15_000;
+export const HEADERS_TIMEOUT_MS = 10_000;
 
 const SECURITY_HEADERS = {
   "content-security-policy": "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
@@ -49,6 +52,9 @@ export function createApp(deps) {
   const log = deps.log ?? (() => {});
   const starter = deps.starter ?? null;
   const nonce = randomBytes(16).toString("hex");
+  // Not a secret: the page compares it with the one in its own HTML, so a page that outlived a restart (and holds a
+  // dead nonce) can say so and offer a reload instead of failing every Start with "nonce refused".
+  const runId = randomBytes(8).toString("hex");
   const states = new Map();
 
   function stateOf(project) {
@@ -117,7 +123,8 @@ export function createApp(deps) {
     let refused = null;
     if (!shouldFetch && (mode === "forced" || mode === "start")) {
       if (backedOff(st)) refused = "backoff";
-      else if (mode === "forced" && age < FORCE_MIN_SECONDS * 1000) refused = "too-soon";
+      // age counts from the last attempt, so after a failure the cache can be older than the floor suggests
+      else if (mode === "forced" && age < FORCE_MIN_SECONDS * 1000) refused = st.lastError ? "too-soon-after-failure" : "too-soon";
       else shouldFetch = true;
     }
     if (shouldFetch) {
@@ -132,6 +139,7 @@ export function createApp(deps) {
     return {
       ...(st.data ?? {}),
       project: { key: project.key, title: project.title, repo: project.repo },
+      runId,
       fetchedAt: st.fetchedAt ? new Date(st.fetchedAt).toISOString() : null,
       ageSeconds: st.fetchedAt ? Math.round((t - st.fetchedAt) / 1000) : null,
       refreshSeconds: intervalMs(st, project) / 1000,
@@ -174,7 +182,7 @@ export function createApp(deps) {
     const origin = `http://${(req.headers.host ?? "").toLowerCase()}`;
     if (req.headers["sec-fetch-site"] !== "same-origin") return json(res, 403, { error: "cross-site request refused" });
     if ((req.headers.origin ?? "").toLowerCase() !== origin) return json(res, 403, { error: "origin refused" });
-    if (req.headers["x-mc-nonce"] !== nonce) return json(res, 403, { error: "nonce refused" });
+    if (req.headers["x-mc-nonce"] !== nonce) return json(res, 403, { error: "nonce refused", runId });
     if (!(req.headers["content-type"] ?? "").startsWith("application/json")) return json(res, 415, { error: "JSON only" });
     let body;
     try {
@@ -221,7 +229,7 @@ export function createApp(deps) {
       if (req.method === "GET" && STATIC.has(url.pathname)) {
         const { file, type } = STATIC.get(url.pathname);
         let body = readFileSync(join(PUBLIC_DIR, file), "utf8");
-        if (file === "index.html") body = body.replace("{{NONCE}}", nonce);
+        if (file === "index.html") body = body.replace("{{NONCE}}", nonce).replace("{{RUN_ID}}", runId);
         send(res, 200, type, body);
         return done(200);
       }
@@ -238,7 +246,7 @@ export function createApp(deps) {
         }
         const { st, refused } = await refresh(project, url.searchParams.get("force") === "1" ? "forced" : "scheduled");
         if (!st.data) {
-          json(res, 502, { error: st.lastError ?? "no board data", project: { key: project.key, title: project.title } });
+          json(res, 502, { error: st.lastError ?? "no board data", project: { key: project.key, title: project.title }, runId });
           return done(502);
         }
         json(res, 200, boardResponse(project, st, refused));
@@ -256,6 +264,8 @@ export function createApp(deps) {
       log(`${req.method} ${url.pathname} 500 ${e?.name ?? "Error"}`);
     }
   });
+  server.requestTimeout = REQUEST_TIMEOUT_MS;
+  server.headersTimeout = HEADERS_TIMEOUT_MS;
 
   function listen(port = 0) {
     return new Promise((resolve, reject) => {
@@ -268,5 +278,5 @@ export function createApp(deps) {
     return new Promise((resolve) => server.close(() => resolve()));
   }
 
-  return { server, nonce, listen, close };
+  return { server, nonce, runId, listen, close };
 }
