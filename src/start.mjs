@@ -102,12 +102,13 @@ export function createStarter(deps) {
         if (plan.error) return { status: 409, body: { error: `#${number} cannot be claimed: ${plan.error}. Nothing was launched.`, reason: "claim" } };
         const c = await claimer.claim(plan.ctx);
         if (!c.ok) {
-          // A timeout or a dropped connection says nothing about what GitHub did, so the whole undo goes out; it is
-          // harmless for the parts that never landed. A GitHub answer says exactly which half landed.
-          const landed = c.unknown ? { assigned: true, statusSet: true } : c;
+          // A lost answer (timeout, dropped connection, 5xx) says nothing about what GitHub did. Removing our own
+          // assignee is always safe; putting the Status back is not, since a rival may have claimed it meanwhile.
+          // A GitHub answer says exactly which half landed.
+          const landed = c.unknown ? { assigned: true, statusSet: false } : c;
           const undo = landed.assigned || landed.statusSet ? await claimer.unclaim(plan.ctx, plan.undo, landed) : { ok: true };
-          const maybe = c.unknown ? ` The claim may have landed before the answer was lost.` : "";
-          return { status: 502, body: { error: `could not claim #${number} on GitHub: ${c.error}.${maybe}${undoNote(undo)} Nothing was launched.`, reason: "claim" } };
+          const maybe = c.unknown ? ` The claim may have landed before the answer was lost; if #${number} now shows ${plan.status} and nobody is working on it, set its Status back on GitHub.` : "";
+          return { status: 502, body: { error: `could not claim #${number} on GitHub: ${c.error}.${maybe}${undoNote(undo)} Nothing was launched.`, reason: "claim", wrote: true } };
         }
         // Two claims in the same moment both succeed (assignees is a list). Whoever sees a stranger backs off, and
         // takes back only its own assignee: the Status stays In progress, because the stranger's session is running.
@@ -116,7 +117,7 @@ export function createStarter(deps) {
         if (!others || others.length) {
           const undo = await claimer.unclaim(plan.ctx, plan.undo, { assigned: true, statusSet: false });
           const who = others ? `was claimed by ${others.join(", ")} at the same moment` : "was claimed, but GitHub did not return its assignees, so a claim by someone else at the same moment cannot be ruled out";
-          return { status: 409, body: { error: `#${number} ${who}.${undoNote(undo)} Its Status stays as it is now. Nothing was launched.`, reason: "claim", assignees: c.assignees } };
+          return { status: 409, body: { error: `#${number} ${who}.${undoNote(undo)} Its Status stays ${plan.status}, in case their session started; if nobody is working on it, set the Status back on GitHub. Nothing was launched.`, reason: "claim", wrote: true, assignees: c.assignees } };
         }
       }
       try {

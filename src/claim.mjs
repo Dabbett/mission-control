@@ -89,7 +89,8 @@ export function createClaimer(deps = {}) {
         forgetToken();
         return { data: null, errors: ["GitHub rejected the token (401). Run `gh auth login` again."] };
       }
-      if (!res.ok) return { data: null, errors: [`GitHub returned HTTP ${res.status}`] };
+      // A 5xx may come after GitHub applied the write (a gateway lost the answer); a 4xx is a refusal.
+      if (!res.ok) return { data: null, errors: [`GitHub returned HTTP ${res.status}`], unknown: res.status >= 500 };
       json = await res.json();
     } catch (e) {
       if (e?.name === "TimeoutError" || e?.name === "AbortError") return { data: null, errors: [`GitHub did not answer within ${TIMEOUT_MS / 1000} s`], unknown: true };

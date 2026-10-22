@@ -227,7 +227,7 @@ export function createApp(deps) {
     const result = await starter.start(project, number, { normalized: st.normalized, confirm });
     // A claim (or an attempt that may have landed, or its undo) changed the board: refetch now, so the page's reload
     // shows GitHub's state instead of a cached Ready.
-    if (result.body?.claimed || result.body?.reason === "claim") await refresh(project, "start");
+    if (result.body?.claimed || result.body?.wrote) await refresh(project, "start");
     return json(res, result.status, result.body);
   }
 
