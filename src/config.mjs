@@ -145,6 +145,7 @@ export function validateProject(raw, source = "project") {
   raw.command.forEach((part, i) => {
     if (LINE_BREAK.test(part)) fail(source, `command[${i}] must not contain a line break`);
     if (part.includes("{title}")) fail(source, `command[${i}] must not use {title}; it is a prompt placeholder, where it is wrapped as untrusted text`);
+    if (part === "--session-id" || part.startsWith("--session-id=")) fail(source, `command[${i}] must not set --session-id; Start gives every session its own (ADR 0003)`);
   });
   if (!raw.command.some((part) => part.includes("{prompt}"))) fail(source, "command must include {prompt} in one element, or the agent starts with no first message");
   p.command = raw.command;

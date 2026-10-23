@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { createStarter, childEnv, CHILD_ENV_KEYS } from "../src/start.mjs";
+import { createStarter, childEnv, CHILD_ENV_KEYS, worktreePath } from "../src/start.mjs";
+import { lockIssue, readRecord, writeRecord } from "../src/sessions.mjs";
 import { createApp } from "../src/server.mjs";
 import { normalize } from "../src/model.mjs";
 import { root, exampleProjects, fixtureBoard, claimableBoard, http } from "./helpers.mjs";
@@ -11,14 +15,25 @@ const projects = exampleProjects({ start: { enabled: true }, localPath: root });
 const example = projects.get("example");
 const normalized = normalize(fixtureBoard(), example);
 
+const stateDir = () => mkdtempSync(join(tmpdir(), "mc-sessions-"));
+const recordOf = (argv) => argv[argv.indexOf("--record") + 1];
+
+/** What the launcher does to the record over a whole session that ended with status 0, so a later Start sees "exited". */
+function endSession(argv) {
+  const path = recordOf(argv);
+  writeRecord(path, { ...readRecord(path), pid: 1, startedAt: "2023-11-14T22:13:21.000Z", exitedAt: "2023-11-14T22:30:00.000Z", exitCode: 0, signal: null });
+}
+
 function starter(opts = {}) {
   const launches = [];
-  const s = createStarter({ root, launch: opts.launch ?? (async (argv) => void launches.push(argv)), now: () => 1_700_000_000_000, node: "/usr/local/bin/node" });
-  return { s, launches };
+  const dir = opts.stateDir ?? stateDir();
+  const launch = opts.launch ?? (async (argv) => (launches.push(argv), endSession(argv)));
+  const s = createStarter({ root, stateDir: dir, launch, now: () => 1_700_000_000_000, node: "/usr/local/bin/node", alive: opts.alive ?? (async () => true), worktreeStatus: opts.worktreeStatus });
+  return { s, launches, dir };
 }
 
 test("start: a Ready issue launches Ghostty with an argv-only command and absolute paths", async () => {
-  const { s, launches } = starter();
+  const { s, launches, dir } = starter();
   const r = await s.start(example, 6, { normalized });
   assert.equal(r.status, 200);
   assert.equal(r.body.ok, true);
@@ -28,14 +43,17 @@ test("start: a Ready issue launches Ghostty with an argv-only command and absolu
   assert.equal(argv[5], "/usr/local/bin/node");
   assert.equal(argv[6], join(root, "bin", "launch.mjs"));
   assert.ok(isAbsolute(argv[6]));
-  assert.deepEqual(argv.slice(7, 10), ["--cwd", example.localPath, "--"]);
+  assert.deepEqual(argv.slice(7, 9), ["--cwd", example.localPath]);
   assert.ok(isAbsolute(example.localPath));
-  assert.deepEqual(argv.slice(10, 17), ["claude", "--model", "opus", "-w", "issue-6", "--name", "#6"]);
-  assert.match(argv[17], /^Read AGENTS\.md, then plan and work issue #6/);
-  assert.equal(argv.length, 18);
+  assert.equal(argv[9], "--record");
+  assert.equal(argv[10], join(dir, `example-6-${r.body.sessionId}.json`));
+  assert.equal(argv[11], "--");
+  assert.deepEqual(argv.slice(12, 19), ["claude", "--model", "opus", "-w", "issue-6", "--name", "example#6"]);
+  assert.match(argv[19], /^Read AGENTS\.md, then plan and work issue #6/);
+  assert.equal(argv.length, 20);
   for (const a of argv) assert.ok(!/[\r\n]/.test(a));
   assert.equal(r.body.model, "opus");
-  assert.deepEqual(s.startedFor("example"), { 6: "2023-11-14T22:13:20.000Z" });
+  assert.deepEqual((await s.sessionsFor("example")).byNumber[6].launchedAt, "2023-11-14T22:13:20.000Z");
 });
 
 test("start: an assigned issue needs confirm, because someone may already have claimed it", async () => {
@@ -63,7 +81,7 @@ test("start: a model label picks the model, and a label outside the allowlist is
   const ok = await s.start(example, 6, { normalized: withLabel(["model:sonnet"]) });
   assert.equal(ok.status, 200);
   assert.equal(ok.body.model, "sonnet");
-  assert.deepEqual(launches[0].slice(10, 13), ["claude", "--model", "sonnet"]);
+  assert.deepEqual(launches[0].slice(12, 15), ["claude", "--model", "sonnet"]);
   const bad = await starter().s.start(example, 6, { normalized: withLabel(["model:gpt-5"]) });
   assert.equal(bad.status, 409);
   assert.match(bad.body.error, /not in model\.allowed/);
@@ -85,8 +103,8 @@ test("start: a Blocked issue, a Decision and an unknown number are refused", asy
   assert.equal(launches.length, 0);
 });
 
-test("start: a repeat needs confirm, and the marker stays until restart", async () => {
-  const { s, launches } = starter();
+test("start: a repeat after the session ended needs confirm, also from a new server on the same records", async () => {
+  const { s, launches, dir } = starter();
   assert.equal((await s.start(example, 6, { normalized })).status, 200);
   const again = await s.start(example, 6, { normalized });
   assert.equal(again.status, 409);
@@ -97,6 +115,8 @@ test("start: a repeat needs confirm, and the marker stays until restart", async 
   const confirmed = await s.start(example, 6, { normalized, confirm: { started: true } });
   assert.equal(confirmed.status, 200);
   assert.equal(launches.length, 2);
+  const restarted = starter({ stateDir: dir });
+  assert.deepEqual((await restarted.s.start(example, 6, { normalized })).body.requiresConfirm, ["started"], "the record outlives the server");
 });
 
 test("start: concurrent starts of the same issue share one launch", async () => {
@@ -112,12 +132,12 @@ test("start: concurrent starts of the same issue share one launch", async () => 
   assert.equal(launches.length, 1);
 });
 
-test("start: a failed launch reports and sets no marker", async () => {
-  const { s } = starter({ launch: async () => { throw new Error("open: not found"); } });
+test("start: a failed launch reports and leaves no session record", async () => {
+  const { s, dir } = starter({ launch: async () => { throw new Error("open: not found"); } });
   const r = await s.start(example, 6, { normalized });
   assert.equal(r.status, 500);
   assert.match(r.body.error, /launch failed: open: not found/);
-  assert.deepEqual(s.startedFor("example"), {});
+  assert.deepEqual(readdirSync(dir), []);
 });
 
 test("start: an issue whose Status the config does not list is refused, though the board shows it Ready", async () => {
@@ -141,7 +161,7 @@ test("start: a missing checkout is a 409 with reason localPath, before any launc
   const file = await s.start({ ...example, localPath: join(root, "package.json") }, 6, { normalized });
   assert.equal(file.body.reason, "localPath", "a file is not a checkout");
   assert.equal(launches.length, 0);
-  assert.deepEqual(s.startedFor("example"), {});
+  assert.deepEqual((await s.sessionsFor("example")).byNumber, {});
 });
 
 test("start: the session gets an allowlisted environment, never the server's token or keys", async () => {
@@ -168,8 +188,8 @@ function fakeClaimer(events, { claim, unclaim } = {}) {
 }
 
 function claimStarter(events, opts = {}) {
-  const launch = opts.launch ?? (async (argv) => void events.push(["launch", argv[10]]));
-  return createStarter({ root, launch, now: () => 1_700_000_000_000, node: "/usr/local/bin/node", claimer: fakeClaimer(events, opts) });
+  const launch = opts.launch ?? (async (argv) => void events.push(["launch", argv[12]]));
+  return createStarter({ root, stateDir: stateDir(), launch, now: () => 1_700_000_000_000, node: "/usr/local/bin/node", claimer: fakeClaimer(events, opts) });
 }
 
 test("claim: with start.claim dashboard, the issue is claimed before anything launches, and the reply says so", async () => {
@@ -183,7 +203,7 @@ test("claim: with start.claim dashboard, the issue is claimed before anything la
 
 test("claim: with the default (agent), nothing is claimed", async () => {
   const events = [];
-  const s = createStarter({ root, launch: async () => void events.push(["launch"]), node: "/usr/local/bin/node", claimer: fakeClaimer(events) });
+  const s = createStarter({ root, stateDir: stateDir(), launch: async () => void events.push(["launch"]), node: "/usr/local/bin/node", claimer: fakeClaimer(events) });
   assert.equal((await s.start(example, 6, { normalized })).status, 200);
   assert.deepEqual(events.map((e) => e[0]), ["launch"]);
 });
@@ -286,13 +306,15 @@ test("server start: the full happy path refetches, launches and reports the mark
   const { a, port, post, launches, fetchCount } = await app(t);
   const before = await http(port, "/api/board?project=example");
   assert.equal(before.json.start.enabled, true);
-  assert.deepEqual(before.json.start.started, {});
+  assert.deepEqual(before.json.start.sessions, {});
+  assert.equal(before.json.start.running, 0);
   const r = await post({ project: "example", number: 6 });
   assert.equal(r.status, 200, r.text);
   assert.equal(launches.length, 1);
   assert.equal(fetchCount(), 2, "start refetches before launching");
   const after = await http(port, "/api/board?project=example");
-  assert.ok(after.json.start.started[6]);
+  assert.equal(after.json.start.sessions[6].state, "exited");
+  assert.equal(after.json.start.running, 0);
   assert.ok(after.json.layers.some((l) => l.groups.some((g) => g.parts.some((p) => p.leaves.some((x) => x.number === 6 && typeof x.copy === "string" && x.copy.startsWith("cd '/"))))));
   void a;
 });
@@ -329,7 +351,7 @@ test("server start: non-Ready is 409, a repeat needs confirm, a double click is 
   let release;
   const gate = new Promise((r) => (release = r));
   const launches = [];
-  const { post } = await app(t, { launch: async (argv) => (launches.push(argv), await gate) });
+  const { post } = await app(t, { launch: async (argv) => (launches.push(argv), await gate, endSession(argv)) });
   assert.equal((await post({ project: "example", number: 36 })).status, 409);
   const p1 = post({ project: "example", number: 6 });
   await new Promise((r) => setTimeout(r, 30));
@@ -437,4 +459,108 @@ test("server start: a claimed start refetches, so the next board load shows In p
   const leaf6 = (await http(port, "/api/board?project=example")).json.layers.flatMap((l) => l.groups.flatMap((g) => g.parts.flatMap((p) => p.leaves))).find((l) => l.number === 6);
   assert.equal(leaf6.state, "inProgress");
   assert.deepEqual(leaf6.assignees, ["me"]);
+});
+
+// ── session records (ADR 0003) ────────────────────────────────────────────────
+
+test("start: a running or starting session is refused outright, whatever is confirmed", async () => {
+  const all = { started: true, assigned: true, worktree: true };
+  const { s, launches, dir } = starter({ launch: async (argv) => void launches.push(argv) });
+  assert.equal((await s.start(example, 6, { normalized })).status, 200);
+  const starting = await s.start(example, 6, { normalized, confirm: all });
+  assert.equal(starting.status, 409);
+  assert.equal(starting.body.reason, "running");
+  assert.match(starting.body.error, /#6 has a session launched at .* that has not opened yet on this machine/);
+  const path = recordOf(launches[0]);
+  writeRecord(path, { ...readRecord(path), pid: 4242, startedAt: "2023-11-14T22:13:21.000Z" });
+  const running = await s.start(example, 6, { normalized, confirm: all });
+  assert.equal(running.body.reason, "running");
+  assert.match(running.body.error, /running since 2023-11-14T22:13:21\.000Z on this machine\. Close its window first/);
+  const other = starter({ stateDir: dir, launch: async (argv) => void launches.push(argv) });
+  assert.equal((await other.s.start(example, 6, { normalized, confirm: all })).body.reason, "running", "a second server sees it too");
+  assert.equal(launches.length, 1);
+  const board = await s.sessionsFor("example");
+  assert.equal(board.byNumber[6].state, "running");
+  assert.equal(board.running, 1);
+});
+
+test("start: a launcher that died without an end, or never ran, counts as ended: confirm, not refuse", async () => {
+  const { s, launches } = starter({ launch: async (argv) => void launches.push(argv), alive: async () => false });
+  assert.equal((await s.start(example, 6, { normalized })).status, 200);
+  const path = recordOf(launches[0]);
+  writeRecord(path, { ...readRecord(path), pid: 4242, startedAt: "2023-11-14T22:13:21.000Z" });
+  const r = await s.start(example, 6, { normalized });
+  assert.deepEqual(r.body.requiresConfirm, ["started"]);
+  assert.equal(r.body.session.state, "ended");
+  let t = 1_700_000_000_000;
+  const later = createStarter({ root, stateDir: mkdtempSync(join(tmpdir(), "mc-sessions-")), launch: async () => {}, now: () => t, node: "/usr/local/bin/node" });
+  assert.equal((await later.start(example, 6, { normalized })).status, 200);
+  t += 61_000; // the launcher never took the record over
+  const never = await later.start(example, 6, { normalized });
+  assert.deepEqual(never.body.requiresConfirm, ["started"]);
+  assert.equal(never.body.session.note, "the launcher never ran");
+});
+
+test("start: another mission control holding the issue's lock is a 429; a lock left by a crash expires", async () => {
+  const { s, dir, launches } = starter();
+  const release = lockIssue(dir, "example", 6, 1_700_000_000_000);
+  assert.ok(release);
+  const r = await s.start(example, 6, { normalized });
+  assert.equal(r.status, 429);
+  assert.match(r.body.error, /another mission control on this machine/);
+  release();
+  assert.equal((await s.start(example, 6, { normalized, confirm: {} })).status, 200);
+  assert.equal(launches.length, 1);
+  assert.ok(lockIssue(dir, "example", 7, 1_700_000_000_000));
+  assert.equal(lockIssue(dir, "example", 7, 1_700_000_000_000), null);
+  assert.ok(lockIssue(dir, "example", 7, Date.now() + 10 * 60_000), "stale after LOCK_STALE_MS");
+});
+
+test("start: a leftover worktree with uncommitted changes needs its own confirm and names the path", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "mc-repo-"));
+  const wt = join(repo, ".claude", "worktrees", "issue-6");
+  mkdirSync(wt, { recursive: true });
+  const git = (...a) => assert.equal(spawnSync("git", ["-C", wt, ...a], { encoding: "utf8" }).status, 0);
+  git("init", "-q");
+  const local = { ...example, localPath: repo };
+  const clean = starter();
+  assert.equal((await clean.s.start(local, 6, { normalized })).status, 200, "a clean worktree is no reason");
+  writeFileSync(join(wt, "half-done.txt"), "x");
+  const { s, launches } = starter();
+  const r = await s.start(local, 6, { normalized });
+  assert.equal(r.status, 409);
+  assert.deepEqual(r.body.requiresConfirm, ["worktree"]);
+  assert.equal(r.body.worktree, wt);
+  assert.match(r.body.error, new RegExp(`#6 has uncommitted changes in its worktree ${wt.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.equal((await s.start(local, 6, { normalized, confirm: { started: true, assigned: true } })).status, 409, "other confirms do not pass");
+  assert.equal((await s.start(local, 6, { normalized, confirm: { worktree: true } })).status, 200);
+  assert.equal(launches.length, 1);
+  const broken = await starter({ worktreeStatus: async () => ({ error: "git could not read it" }) }).s.start(local, 6, { normalized });
+  assert.match(broken.body.error, /has a worktree at .* that git could not read it/);
+});
+
+test("start: the worktree path comes from -w/--worktree in the rendered command, and an odd name is not checked", () => {
+  const p = { localPath: "/r" };
+  assert.equal(worktreePath(p, ["claude", "-w", "issue-6", "x"]), "/r/.claude/worktrees/issue-6");
+  assert.equal(worktreePath(p, ["claude", "--worktree", "a.b"]), "/r/.claude/worktrees/a.b");
+  assert.equal(worktreePath(p, ["claude", "--worktree=w1"]), "/r/.claude/worktrees/w1");
+  assert.equal(worktreePath(p, ["claude", "-w", "--name", "x"]), null, "-w with no name: claude picks one");
+  assert.equal(worktreePath(p, ["claude", "-w", ".."]), null);
+  assert.equal(worktreePath(p, ["claude", "-w", "a/b"]), null);
+  assert.equal(worktreePath(p, ["claude", "x"]), null);
+});
+
+test("server start: the board lists the newest session per issue and counts the running ones", async (t) => {
+  const launches = [];
+  const { port, post } = await app(t, { launch: async (argv) => void launches.push(argv) });
+  assert.equal((await post({ project: "example", number: 6 })).status, 200);
+  const path = recordOf(launches[0]);
+  writeRecord(path, { ...readRecord(path), pid: 4242, startedAt: "2023-11-14T22:13:21.000Z" });
+  const b = (await http(port, "/api/board?project=example")).json;
+  assert.equal(b.start.sessions[6].state, "running");
+  assert.equal(b.start.running, 1);
+  const refused = await post({ project: "example", number: 6, confirm: { started: true } });
+  assert.equal(refused.status, 409);
+  assert.equal(refused.json.reason, "running");
+  assert.equal(launches.length, 1);
 });

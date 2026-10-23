@@ -25,6 +25,7 @@ function vars(project, issue, prompt) {
   const title = sanitizeTitle(issue.title);
   return {
     number: String(issue.number),
+    key: project.key,
     repo: project.repo,
     title,
     ...(prompt === undefined ? {} : { prompt }),

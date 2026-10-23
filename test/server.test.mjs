@@ -145,7 +145,7 @@ test("a request that never finishes is cut off in seconds, not Node's five minut
 
 test("a request that stalls halfway through its body is answered 408 and its socket closed", async (t) => {
   // A starter and the same-origin headers, so the server gets as far as reading the body, where it waits.
-  const starter = { start: async () => ({ status: 500, body: {} }), startedFor: () => ({}) };
+  const starter = { start: async () => ({ status: 500, body: {} }), sessionsFor: async () => ({ byNumber: {}, running: 0 }) };
   const a = await app(t, { starter, timeouts: { requestMs: 300, headersMs: 200, checkEveryMs: 50 } });
   const host = `127.0.0.1:${a.port}`;
   const sock = connect(a.port, "127.0.0.1");

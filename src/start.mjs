@@ -1,10 +1,11 @@
 // Opt-in Start: opens a new Ghostty window running the launcher, which runs claude. No shell anywhere.
 import { execFile } from "node:child_process";
-import { statSync } from "node:fs";
+import { rmSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { argvFor, modelFor } from "./prompt.mjs";
 import { issueView, LEAF } from "./model.mjs";
 import { claimPlan, createClaimer } from "./claim.mjs";
+import { createRecord, isLive, launcherAlive, listSessions, lockIssue, planRecord } from "./sessions.mjs";
 
 /**
  * The environment a started session gets. `open` hands its environment to the app it launches, and Ghostty passes
@@ -24,6 +25,27 @@ function defaultLaunch(argv, { env }) {
   });
 }
 
+/** `git status` of a leftover worktree: { dirty } or { error }. execFile, no shell. */
+function defaultWorktreeStatus(path) {
+  return new Promise((resolve) => {
+    execFile("git", ["-C", path, "status", "--porcelain"], { timeout: 5000 }, (err, stdout) => {
+      if (err) resolve({ error: "git could not read it" });
+      else resolve({ dirty: stdout.trim().length > 0 });
+    });
+  });
+}
+
+/** The worktree `claude -w <name>` uses: <localPath>/.claude/worktrees/<name>. Null when the command names none. */
+export function worktreePath(project, argv) {
+  let name = null;
+  argv.forEach((a, i) => {
+    if ((a === "-w" || a === "--worktree") && argv[i + 1] && !argv[i + 1].startsWith("-")) name = argv[i + 1];
+    else if (a.startsWith("--worktree=")) name = a.slice("--worktree=".length);
+  });
+  if (!name || !/^[A-Za-z0-9._-]+$/.test(name) || /^\.+$/.test(name)) return null;
+  return join(project.localPath, ".claude", "worktrees", name);
+}
+
 function isDirectory(path) {
   try {
     return statSync(path).isDirectory();
@@ -35,34 +57,42 @@ function isDirectory(path) {
 /**
  * @param {object} deps
  * @param {string} deps.root   absolute path of this repo (for bin/launch.mjs)
+ * @param {string} deps.stateDir   absolute session record dir (sessions.mjs sessionsDir()); tests pass a temp dir
  * @param {(argv: string[], opts: { env: object }) => Promise<void>} [deps.launch]   test seam; default runs `open` with the argv and the allowlisted env
  * @param {() => number} [deps.now]
  * @param {string} [deps.node]   absolute node binary for the launcher
  * @param {{ claim: Function, unclaim: Function }} [deps.claimer]   test seam; default writes to GitHub (claim.mjs)
+ * @param {(record) => Promise<boolean>} [deps.alive]   test seam; default checks the launcher's pid and command line
+ * @param {(path: string) => Promise<{ dirty?: boolean, error?: string }>} [deps.worktreeStatus]   test seam; default runs git
  */
 export function createStarter(deps) {
   if (!deps?.root || !isAbsolute(deps.root)) throw new Error("createStarter needs an absolute root");
+  if (!deps.stateDir || !isAbsolute(deps.stateDir)) throw new Error("createStarter needs an absolute stateDir");
   const launcher = join(deps.root, "bin", "launch.mjs");
   const launch = deps.launch ?? defaultLaunch;
   const now = deps.now ?? (() => Date.now());
   const node = deps.node ?? process.execPath;
   const claimer = deps.claimer ?? createClaimer();
-  const started = new Map(); // "<key>#<number>" -> ISO time, kept until the server restarts
+  const alive = deps.alive ?? launcherAlive;
+  const worktreeStatus = deps.worktreeStatus ?? defaultWorktreeStatus;
+  const dir = deps.stateDir;
   const locks = new Set();
 
-  function ghosttyArgv(project, issue) {
-    const argv = ["-na", "Ghostty.app", "--args", "--quit-after-last-window-closed=true", "-e", node, launcher, "--cwd", project.localPath, "--", ...argvFor(project, issue)];
+  function ghosttyArgv(project, issue, recordPath) {
+    const argv = ["-na", "Ghostty.app", "--args", "--quit-after-last-window-closed=true", "-e", node, launcher, "--cwd", project.localPath, "--record", recordPath, "--", ...argvFor(project, issue)];
     for (const a of argv) if (/[\r\n]/.test(a)) throw new Error("argument contains a line break");
     return argv;
   }
 
-  function startedFor(key) {
-    const out = {};
-    for (const [id, at] of started) if (id.startsWith(`${key}#`)) out[id.slice(key.length + 1)] = at;
-    return out;
+  /** The newest session per issue number, for the board, and how many run now. */
+  async function sessionsFor(key) {
+    const all = await listSessions(dir, key, { now: now(), alive });
+    const byNumber = {};
+    for (const { number, ...s } of all) byNumber[number] ??= s;
+    return { byNumber, running: all.filter(isLive).length };
   }
 
-  /** confirm is per reason, { started, assigned }: agreeing to one never passes the other. */
+  /** confirm is per reason, { started, assigned, worktree }: agreeing to one never passes another. */
   async function start(project, number, { normalized, confirm = {} }) {
     const view = issueView(normalized, project, number);
     if (!view) return { status: 404, body: { error: `#${number} is not on the board` } };
@@ -76,21 +106,37 @@ export function createStarter(deps) {
     if (!isDirectory(project.localPath)) return { status: 409, body: { error: `#${number}: localPath does not exist: ${project.localPath}`, reason: "localPath" } };
     const id = `${project.key}#${number}`;
     if (locks.has(id)) return { status: 429, body: { error: `#${number} is already starting` } };
-    const prev = started.get(id);
-    // The prompt tells agents to claim the issue; an assignee means someone (or another session) may already have.
-    // Every unconfirmed reason comes back at once, so a page that showed none learns all of them in one refusal.
-    const missing = [];
-    if (prev && confirm?.started !== true) missing.push(["started", `started at ${prev}`]);
-    if (view.assignees.length && confirm?.assigned !== true) missing.push(["assigned", `assigned to ${view.assignees.join(", ")}`]);
-    if (missing.length) {
-      const error = `#${number} was ${missing.map(([, text]) => text).join(" and is ")}`;
-      return { status: 409, body: { error, requiresConfirm: missing.map(([reason]) => reason), ...(prev ? { startedAt: prev } : {}), assignees: view.assignees } };
-    }
+    // Held from the session check to the record write, here and across every server on this machine.
+    const release = lockIssue(dir, project.key, number, now());
+    if (!release) return { status: 429, body: { error: `#${number} is already starting (another mission control on this machine)` } };
     locks.add(id);
     try {
+      const sessions = (await listSessions(dir, project.key, { now: now(), alive })).filter((s) => s.number === number);
+      // A live session is refused outright, confirm or not: a second one would work in the same worktree.
+      const live = sessions.find(isLive);
+      if (live) {
+        const what = live.state === "starting" ? `a session launched at ${live.launchedAt} that has not opened yet` : `a session running since ${live.startedAt}`;
+        return { status: 409, body: { error: `#${number} has ${what} on this machine. Close its window first; a second session would share its worktree.`, reason: "running", session: live } };
+      }
+      const prev = sessions[0] ?? null;
+      const wt = worktreePath(project, argvFor(project, view));
+      const wtStatus = wt && isDirectory(wt) ? await worktreeStatus(wt) : null;
+      // The prompt tells agents to claim the issue; an assignee means someone (or another session) may already have.
+      // Every unconfirmed reason comes back at once, so a page that showed none learns all of them in one refusal.
+      const missing = [];
+      if (prev && confirm?.started !== true) missing.push(["started", `was started at ${prev.launchedAt}`]);
+      if (view.assignees.length && confirm?.assigned !== true) missing.push(["assigned", `is assigned to ${view.assignees.join(", ")}`]);
+      if (wtStatus && (wtStatus.dirty || wtStatus.error) && confirm?.worktree !== true) {
+        missing.push(["worktree", wtStatus.error ? `has a worktree at ${wt} that ${wtStatus.error}` : `has uncommitted changes in its worktree ${wt}`]);
+      }
+      if (missing.length) {
+        const error = `#${number} ${missing.map(([, text]) => text).join(" and ")}`;
+        return { status: 409, body: { error, requiresConfirm: missing.map(([reason]) => reason), ...(prev ? { startedAt: prev.launchedAt, session: prev } : {}), assignees: view.assignees, ...(missing.some(([r]) => r === "worktree") ? { worktree: wt } : {}) } };
+      }
+      const rec = planRecord(dir, project.key, number);
       let argv;
       try {
-        argv = ghosttyArgv(project, view);
+        argv = ghosttyArgv(project, view, rec.path);
       } catch (e) {
         return { status: 500, body: { error: `launch failed: ${e instanceof Error ? e.message : String(e)}. Nothing was claimed or launched.` } };
       }
@@ -120,21 +166,29 @@ export function createStarter(deps) {
           return { status: 409, body: { error: `#${number} ${who}.${undoNote(undo)} Its Status stays ${plan.status}, in case their session started; if nobody is working on it, set the Status back on GitHub. Nothing was launched.`, reason: "claim", wrote: true, assignees: c.assignees } };
         }
       }
+      // Written before the launch, so a Start a moment later (here or in another instance) sees "starting".
+      const at = new Date(now()).toISOString();
+      try {
+        createRecord(rec.path, { v: 1, key: project.key, number, sessionId: rec.sessionId, launchedAt: at, cwd: project.localPath });
+      } catch (e) {
+        const undo = plan ? await claimer.unclaim(plan.ctx, plan.undo) : null;
+        return { status: 500, body: { error: `could not write the session record: ${e.code ?? "error"}${undo ? `.${undoNote(undo, true)}` : ""}. Nothing was launched.` } };
+      }
       try {
         await launch(argv, { env: childEnv() });
       } catch (e) {
+        rmSync(rec.path, { force: true });
         const undo = plan ? await claimer.unclaim(plan.ctx, plan.undo) : null;
         return { status: 500, body: { error: `launch failed: ${e instanceof Error ? e.message : String(e)}${undo ? `.${undoNote(undo, true)}` : ""}` } };
       }
-      const at = new Date(now()).toISOString();
-      started.set(id, at);
-      return { status: 200, body: { ok: true, startedAt: at, model, command: argvFor(project, view), ...(plan ? { claimed: { by: plan.viewer, status: plan.status } } : {}) } };
+      return { status: 200, body: { ok: true, startedAt: at, sessionId: rec.sessionId, model, command: argvFor(project, view), ...(plan ? { claimed: { by: plan.viewer, status: plan.status } } : {}) } };
     } finally {
       locks.delete(id);
+      release();
     }
   }
 
-  return { start, startedFor, ghosttyArgv, launcher };
+  return { start, sessionsFor, ghosttyArgv, launcher };
 }
 
 /** One sentence on how an undo went, for the refusal. A failed undo says what to fix by hand. */

@@ -161,6 +161,12 @@ test("validation refuses line breaks where Start would pass them as one argument
   assert.throws(() => validateProject(base({ localPath: "~/some\nwhere" })), /localPath must not contain a line break/);
 });
 
+test("validation: command must not set --session-id; Start gives every session its own", () => {
+  assert.throws(() => validateProject(base({ command: ["claude", "--session-id", "x", "{prompt}"] })), /command\[1\] must not set --session-id/);
+  assert.throws(() => validateProject(base({ command: ["claude", "--session-id=x", "{prompt}"] })), /must not set --session-id/);
+  assert.doesNotThrow(() => validateProject(base({ command: ["claude", "--name", "{key}#{number}", "{prompt}"] })));
+});
+
 test("validation: {title} is a prompt placeholder only, and command must carry {prompt}", () => {
   assert.throws(() => validateProject(base({ command: ["claude", "{title}", "{prompt}"] })), /command\[1\] must not use \{title\}/);
   assert.throws(() => validateProject(base({ command: ["claude", "-w", "issue-{number}"] })), /command must include \{prompt\}/);
