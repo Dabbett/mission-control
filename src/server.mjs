@@ -47,7 +47,7 @@ function json(res, status, obj) {
  * @param {(project) => Promise<object>} deps.fetchBoard   the one GitHub read
  * @param {() => number} [deps.now]
  * @param {(line: string) => void} [deps.log]
- * @param {object} [deps.starter]   { start(project, number, opts) } from start.mjs; absent = Start disabled everywhere
+ * @param {object} [deps.starter]   { start(project, number, opts), sessionsFor(key) } from start.mjs; absent = Start disabled everywhere
  * @param {{ requestMs?: number, headersMs?: number, checkEveryMs?: number }} [deps.timeouts]   test seam, so a test
  *   can shorten all three
  */
@@ -139,7 +139,7 @@ export function createApp(deps) {
     return { st, refused };
   }
 
-  function boardResponse(project, st, refused) {
+  function boardResponse(project, st, refused, sessions) {
     const t = now();
     return {
       ...(st.data ?? {}),
@@ -155,7 +155,9 @@ export function createApp(deps) {
       backoff: { active: backedOff(st), until: st.backoffUntil ? new Date(st.backoffUntil).toISOString() : null },
       start: {
         enabled: Boolean(starter && project.start.enabled),
-        started: starter ? starter.startedFor(project.key) : {},
+        // The newest session record per issue number (ADR 0003), and how many run on this machine now.
+        sessions: sessions?.byNumber ?? {},
+        running: sessions?.running ?? 0,
         // With the opt-in claim, the page says what Start will write before anyone presses it.
         claim: project.start.claim === "dashboard" ? { status: claimStatusName(project) } : null,
       },
@@ -216,9 +218,9 @@ export function createApp(deps) {
     if (!project.start.enabled) return json(res, 404, { error: "Start is disabled for this project" });
     const number = body.number;
     if (!Number.isSafeInteger(number) || number <= 0) return json(res, 400, { error: "number must be a positive integer" });
-    // Per reason, and only a literal true counts: { started, assigned }. Anything else confirms nothing.
+    // Per reason, and only a literal true counts: { started, assigned, worktree }. Anything else confirms nothing.
     const c = body.confirm && typeof body.confirm === "object" ? body.confirm : {};
-    const confirm = { started: c.started === true, assigned: c.assigned === true };
+    const confirm = { started: c.started === true, assigned: c.assigned === true, worktree: c.worktree === true };
 
     const { st, refused } = await refresh(project, "start");
     if (refused === "backoff") return json(res, 429, { error: "rate-limit backoff: not refetching before a start" });
@@ -273,7 +275,7 @@ export function createApp(deps) {
           json(res, 502, { error: st.lastError ?? "no board data", project: { key: project.key, title: project.title }, runId });
           return done(502);
         }
-        json(res, 200, boardResponse(project, st, refused));
+        json(res, 200, boardResponse(project, st, refused, starter && project.start.enabled ? await starter.sessionsFor(project.key) : null));
         return done(200);
       }
       if (req.method === "POST" && url.pathname === "/api/start") {

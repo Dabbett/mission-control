@@ -8,6 +8,7 @@ import { flagReader } from "../src/cli.mjs";
 import { loadProjects, pickProject, resolveConfigDir } from "../src/config.mjs";
 import { fetchBoard } from "../src/github.mjs";
 import { createApp } from "../src/server.mjs";
+import { sessionsDir } from "../src/sessions.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -39,7 +40,7 @@ const app = createApp({
   projects,
   fetchBoard,
   log: (line) => console.log(new Date().toISOString().slice(11, 19), line),
-  starter: anyStart ? createStarter({ root }) : null,
+  starter: anyStart ? createStarter({ root, stateDir: sessionsDir() }) : null,
 });
 
 const bound = await app.listen(port);

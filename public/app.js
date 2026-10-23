@@ -10,12 +10,13 @@ let timer = null;
 let selected = null; // { kind: "part" | "decisions" | "unsorted", path }
 const staged = []; // issue numbers on the Workbench, in the order staged; kept until the page reloads
 const startErrors = new Map(); // issue number -> why its last Start was refused; shown on its staged card
+const dirtyWorktrees = new Map(); // issue number -> worktree path the server found uncommitted changes in; a confirm reason
 let restarted = false; // the server restarted since this page loaded, so the page's nonce is dead
 let failure = null; // { kind: "unreachable" | "noData", msg } from the last load, or null
 let receivedAt = 0; // Date.now() when `board` arrived, so its age keeps counting while the server is silent
 let shownNotice = null; // the notice text on screen; redrawn only when it changes, so the alert is not re-announced
 const DRAG_TYPE = "application/x-mc-issue";
-const MANY_STARTED = 2; // at this many issues started in one server run, or more, the Workbench warns
+const MANY_RUNNING = 2; // at this many sessions running on this machine, or more, the Workbench warns
 
 const GLYPH = { done: "✓", inProgress: "◐", inReview: "◑", ready: "▶", blocked: "■", decision: "◇", dropped: "⊘", notStarted: "○", allDropped: "⊘" };
 const LABEL = { done: "Done", inProgress: "In progress", inReview: "In review", ready: "Ready", blocked: "Blocked", decision: "Open decision", dropped: "Dropped", notStarted: "Not started", allDropped: "All dropped" };
@@ -139,6 +140,19 @@ function ageText(b) {
   const age = ageSeconds(b);
   const when = age === null ? "no data" : age < 5 ? "just now" : age < 120 ? `${age}s ago` : `${Math.round(age / 60)} min ago`;
   return `fetched ${when} · every ${b.refreshSeconds}s`;
+}
+
+function when(iso) {
+  const d = new Date(iso);
+  return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString() : d.toLocaleString();
+}
+
+/** One line on an issue's newest session record (ADR 0003). */
+function sessionText(s) {
+  if (s.state === "running") return `Session running since ${when(s.startedAt)}`;
+  if (s.state === "starting") return `Session launched at ${when(s.launchedAt)}, not open yet`;
+  if (s.state === "exited") return `Session started ${when(s.launchedAt)}, ${s.signal ? `ended by ${s.signal}` : `exited with status ${s.exitCode}`} at ${when(s.exitedAt)}${s.note ? `: ${s.note}` : ""}`;
+  return `Session started ${when(s.launchedAt)} ended without a record (${s.note ?? "window closed or the launcher crashed"})`;
 }
 
 /** Start is off while the page cannot trust what it shows: an old board, a silent server, or a dead nonce. */
@@ -293,6 +307,8 @@ function leafDetail(l, b) {
     box.append(prs);
   }
   if (l.truncated.length) box.append(el("div", { class: "sub", text: `truncated: ${l.truncated.join(", ")}` }));
+  const session = b.start?.sessions?.[l.number];
+  if (session) box.append(el("div", { class: session.state === "running" || session.state === "starting" ? "reason" : "sub", text: sessionText(session) }));
   if (l.state === "ready") {
     // Shown on every Ready leaf: Ready only means the board has no blocking edge, which says nothing about prose.
     box.append(el("div", { class: "note", text: "No blocking edges on the board. Check the issue for dependencies written in prose before starting." }));
@@ -347,6 +363,7 @@ function stage(number) {
 
 function unstage(number) {
   startErrors.delete(number);
+  dirtyWorktrees.delete(number);
   const i = staged.indexOf(number);
   if (i >= 0) staged.splice(i, 1);
   if (board) {
@@ -377,15 +394,21 @@ function stagedCard(number, b) {
   if (ready && b.start?.enabled && !unlisted) {
     // The label names every reason a confirm is needed, from board data, and a click confirms exactly
     // those reasons. One the page hasn't seen yet comes back as a 409; the reload then adds it here.
-    const startedAt = b.start.started?.[number];
+    // A running session is refused outright on the server; the card says so and offers no Start.
+    const session = b.start.sessions?.[number];
+    const live = session && (session.state === "running" || session.state === "starting");
+    const worktree = dirtyWorktrees.get(number);
+    if (session) box.append(el("div", { class: live ? "reason" : "sub", text: live ? `${sessionText(session)} on this machine. Close its window before starting another.` : sessionText(session) }));
+    if (worktree) box.append(el("div", { class: "reason", text: `Its worktree ${worktree} has uncommitted changes (or git could not read it). Look before a new session works there.` }));
     const reasons = [];
-    if (startedAt) reasons.push(`Started ${new Date(startedAt).toLocaleTimeString()}`);
+    if (session && !live) reasons.push(`Started ${when(session.launchedAt)}`);
     if (l.assignees.length) reasons.push(`Assigned to ${l.assignees.join(", ")}`);
-    const confirm = { started: Boolean(startedAt), assigned: l.assignees.length > 0 };
+    if (worktree) reasons.push("Uncommitted changes");
+    const confirm = { started: Boolean(session && !live), assigned: l.assignees.length > 0, worktree: Boolean(worktree) };
     const label = reasons.length ? `${reasons.join(" · ")} · start anyway?` : `Start #${number}`;
     // With the opt-in claim, Start writes to GitHub before it launches: say so on the card, not only in the README.
     if (b.start.claim) box.append(el("div", { class: "sub", text: `Start assigns you and sets Status to ${b.start.claim.status} on GitHub, then opens the session.` }));
-    const blocked = startBlocked();
+    const blocked = startBlocked() ?? (live ? "A session for this issue is running on this machine." : null);
     actions.append(el("button", { type: "button", class: `btn ${reasons.length ? "btn-warn" : "btn-primary"}`, text: label, disabled: Boolean(blocked), title: blocked, onclick: (e) => startIssue(number, e.currentTarget, confirm) }));
   } else if (ready) {
     actions.append(el("button", { type: "button", class: "btn btn-primary", text: "Copy prompt", onclick: () => copyLine(l.copy) }));
@@ -399,8 +422,8 @@ function renderWorkbench(b) {
   const wb = document.getElementById("workbench");
   const head = el("div", { class: "wb-head" }, el("h2", { text: "Workbench" }));
   if (!b.start?.enabled) head.append(el("span", { class: "sub", text: "Start is off: copy the prompt instead (start.enabled in the project config)" }));
-  const startedCount = Object.keys(b.start?.started ?? {}).length;
-  if (startedCount >= MANY_STARTED) head.append(chip(`${startedCount} sessions started this run; each one is a full Claude session`, "warn"));
+  const running = b.start?.running ?? 0;
+  if (running >= MANY_RUNNING) head.append(chip(`${running} sessions running on this machine; each one is a full Claude session`, "warn"));
   const body = el("div", { class: "wb-body" });
   for (const n of staged) body.append(stagedCard(n, b));
   if (!staged.length) body.append(el("p", { class: "empty", text: "Drag a Ready issue here, or use Add to Workbench. Blocked issues and decisions stay on the board." }));
@@ -490,11 +513,14 @@ async function startIssue(number, button, confirm = {}) {
     const data = await res.json().catch(() => ({}));
     if (asked !== projectKey) return toast(`#${number} (${asked}): ${res.ok ? "started" : data.error ?? res.status}`, 6000); // switched meanwhile
     if (res.ok) {
+      dirtyWorktrees.delete(number);
       unstage(number);
       toast(`Started #${number}${data.model ? ` on ${data.model}` : ""} in a new Ghostty window${data.claimed ? `; assigned to ${data.claimed.by}, Status ${data.claimed.status}` : ""}`, 6000);
       await load(false);
     } else if (res.status === 409 && data.requiresConfirm) {
-      // A reason the card didn't show. Nothing is remembered as confirmed: the reload puts it on the label.
+      // A reason the card didn't show. Nothing is remembered as confirmed: the reload puts it on the label. A dirty
+      // worktree is not on the board, so its path is kept here until the Start succeeds or the card is removed.
+      if (data.worktree) dirtyWorktrees.set(number, data.worktree);
       toast(`Not started: #${number} changed since the card was drawn. Check its label, then press Start again.`, 6000);
       await load(false);
     } else {

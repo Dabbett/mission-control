@@ -89,7 +89,10 @@ test("page: switching projects empties the Workbench", () => {
 
 test("page: a Start click confirms exactly the reasons its label shows, and nothing is remembered", () => {
   assert.ok(!js.includes("pendingConfirm"), "no remembered confirm that could carry over to an unseen reason");
-  assert.match(js, /if \(startedAt\) reasons\.push\([^\n]*\n\s*if \(l\.assignees\.length\) reasons\.push\([^\n]*\n\s*const confirm = \{ started: Boolean\(startedAt\), assigned: l\.assignees\.length > 0 \};\n\s*const label = reasons\.length \?/, "label reasons and confirm flags come from the same two facts");
+  // The one reason the board cannot carry: the server's worktree path is kept as a reason for the label, never as a confirm.
+  assert.match(js, /if \(data\.worktree\) dirtyWorktrees\.set\(number, data\.worktree\);/);
+  assert.match(js, /function unstage\(number\) \{\s*startErrors\.delete\(number\);\s*dirtyWorktrees\.delete\(number\);/);
+  assert.match(js, /if \(session && !live\) reasons\.push\([^\n]*\n\s*if \(l\.assignees\.length\) reasons\.push\([^\n]*\n\s*if \(worktree\) reasons\.push\([^\n]*\n\s*const confirm = \{ started: Boolean\(session && !live\), assigned: l\.assignees\.length > 0, worktree: Boolean\(worktree\) \};\n\s*const label = reasons\.length \?/, "label reasons and confirm flags come from the same three facts");
   assert.match(js, /body: JSON\.stringify\(\{ project: asked, number, confirm \}\)/, "the click sends that object as is");
   assert.match(js, /data\.requiresConfirm\) \{[^}]*toast\([^\n]*\n\s*await load\(false\);/, "an unseen reason reloads the card instead of arming a confirm");
 });
@@ -106,7 +109,8 @@ test("page: Start lives only on a Ready staged card, next to the prose-dependenc
   assert.ok(!js.includes("startIssue(l.number"), "no Start in the drill-in");
   assert.match(js, /function stagedCard[\s\S]*?const ready = l && l\.state === "ready" && l\.copy;[\s\S]*?No blocking edges on the board\.[\s\S]*?if \(ready && b\.start\?\.enabled && !unlisted\)/);
   assert.match(js, /const unlisted = ready && l\.statusKnown === false;/, "no Start for a Status the config does not list; Copy stays");
-  assert.match(js, /MANY_STARTED = 2/);
+  assert.match(js, /MANY_RUNNING = 2/);
+  assert.match(js, /const running = b\.start\?\.running \?\? 0;\s*if \(running >= MANY_RUNNING\)/, "the warning counts sessions running now, not starts");
 });
 
 test("page: a restarted server is detected from the run id, and the notice offers a reload", () => {
@@ -118,7 +122,7 @@ test("page: a restarted server is detected from the run id, and the notice offer
 
 test("page: Start is off while the board is stale, the server is silent, or the nonce is dead", () => {
   assert.match(js, /function startBlocked\(\) \{\s*if \(restarted\)[^\n]*\n\s*if \(failure\?\.kind === "unreachable"\)[^\n]*\n\s*if \(failure\)[^\n]*no board data[^\n]*\n\s*if \(board\?\.stale\)/);
-  assert.match(js, /const blocked = startBlocked\(\);\s*actions\.append\(el\("button", \{[^\n]*?disabled: Boolean\(blocked\), title: blocked, onclick: \(e\) => startIssue/);
+  assert.match(js, /const blocked = startBlocked\(\) \?\? \(live \? "A session for this issue is running on this machine\." : null\);\s*actions\.append\(el\("button", \{[^\n]*?disabled: Boolean\(blocked\), title: blocked, onclick: \(e\) => startIssue/);
   assert.match(js, /app\.classList\.toggle\("stale", Boolean\(startBlocked\(\)\)\)/, "and the bands say so");
   assert.match(js, /b\.ageSeconds \+ Math\.round\(\(Date\.now\(\) - receivedAt\) \/ 1000\)/, "the age keeps counting on the page");
 });

@@ -1,0 +1,26 @@
+# ADR 0003: a session record per Start, on disk
+
+Status: accepted 2026-10-23. Supersedes decision 7 of ADR 0001 (the soft warning counted starts) and replaces the in-memory "started" marker that decision 5 of ADR 0001 relies on.
+
+## Context
+
+The only memory of a Start was a map inside the server process. A restart, or a second server for the same project, forgot it, and the next Start launched a second `claude` into the same worktree with no confirm (reproduced in the review of 2026-10-21). The dashboard also could not tell a running session from one that ended, so the "N sessions" warning counted starts and never cleared. ADR 0002's claim covers this only for projects that opt in, and only between machines.
+
+## Decision
+
+1. **One file per Start** in `${XDG_STATE_HOME:-~/.local/state}/mission-control/sessions/`, named `<key>-<number>-<session id>.json` (mode 0600, directory 0700). It holds the project key, issue number, a fresh session id, the launch time and the checkout path; the launcher adds its pid and start time, then how the session ended (time, exit status or signal, and the refusal text when it refused). Records that ended more than 14 days ago are deleted when the list is read.
+2. **The server writes it first, the launcher takes it over.** Start writes the record before it runs `open`, so a Start a moment later, in this server or another, sees the session as *starting*. `bin/launch.mjs` gets the record's path (`--record`), refuses a path that is not a record or one already taken, writes its pid, and passes the record's id to claude as `--session-id`, so the session can be found again with `claude --resume <id>`. The launcher refuses to run claude if it cannot write the record: a session the dashboard cannot see is the failure this ADR exists to prevent. A failed `open` deletes the record.
+3. **States.** *running*: the launcher's pid is alive and its command line holds the session id (so a reused pid does not count; when `ps` cannot answer, a live pid counts). *starting*: launched less than 60 s ago and not yet taken over. *exited*: the launcher wrote an end. *ended*: the launcher is gone without writing one (killed, power loss), or never took the record over.
+4. **A running or starting session refuses Start outright.** No confirm passes it: a second session would share the worktree. Close the window first. An *exited* or *ended* session is the `started` confirm reason, as the in-memory marker was, and it now survives restarts.
+5. **A leftover worktree with uncommitted changes is its own confirm reason** (`worktree`), naming the path. The path is `<localPath>/.claude/worktrees/<name>` for the `-w`/`--worktree` name in the rendered command; a name with a slash or only dots, or no name, is not checked. When git cannot read the folder, that is the reason too. The board does not carry this reason, so the page learns it from the 409 and keeps the path on the card until the Start succeeds or the card is removed.
+6. **A lock per issue across servers.** From the session check to the record write, Start holds `<key>-<number>.lock` (a directory, created atomically) in the same folder, so two servers on this machine cannot both see no session and both launch. A lock older than two minutes is left by a crash and removed.
+7. **The warning counts running sessions**, on this machine, at 2 or more.
+8. **Closing the window is recorded.** The launcher waits for claude asynchronously and handles the hang-up: it passes the signal on, waits for claude to exit, and writes the end with the signal. If claude has not exited after 10 s, the end is written without it.
+9. **`--session-id` belongs to Start.** The validator refuses it in `command`, and the launcher refuses it in its arguments. A `{key}` placeholder (the project key) lets the session name be unique across projects: the example names sessions `{key}#{number}`.
+
+## Consequences
+
+- Restart, a second instance and a crash no longer allow a silent second session on this machine. Other machines still see nothing here; that is ADR 0002's claim.
+- The record is a fact about this machine, not a second source of truth for the board: Status, assignees and PRs still come from GitHub.
+- A session copied with the Copy button is not recorded.
+- `claude agents --json` (live status such as "waiting on a permission prompt") can be joined on the session id later; it is not part of this decision.
