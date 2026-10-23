@@ -16,7 +16,9 @@ import { readRecord, writeRecord } from "../src/sessions.mjs";
 const BILLING_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"];
 // After a hang-up, claude gets this long to exit before the launcher kills it, so a recorded end is a real end.
 // MC_HANGUP_GRACE_MS shortens it for the tests; the server's allowlisted environment never carries it.
-const HANGUP_GRACE_MS = Number(process.env.MC_HANGUP_GRACE_MS) > 0 ? Number(process.env.MC_HANGUP_GRACE_MS) : 10_000;
+// It can only shorten the wait, and not below 100 ms, so a stray value in a shell profile cannot cut a session short.
+const grace = Number(process.env.MC_HANGUP_GRACE_MS);
+const HANGUP_GRACE_MS = grace >= 100 && grace <= 10_000 ? grace : 10_000;
 
 let recordPath = null;
 let record = null;
@@ -91,8 +93,7 @@ for (const sig of ["SIGHUP", "SIGTERM"]) {
     child.kill(sig);
     // A claude that ignores the signal is killed, and the end is recorded from its exit, never before it.
     setTimeout(() => {
-      killedAfter = sig;
-      child.kill("SIGKILL");
+      if (child.kill("SIGKILL")) killedAfter = sig;
     }, HANGUP_GRACE_MS).unref();
   });
 }

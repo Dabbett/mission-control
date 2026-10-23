@@ -25,9 +25,13 @@ function defaultLaunch(argv, { env }) {
   });
 }
 
+// The worktree is the agent's folder: its git config could name a command for git to run (fsmonitor, hooks).
+// Those are off here, so reading its status never runs anything outside claude's permission prompts.
+const GIT_SAFE = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"];
+
 function git(args) {
   return new Promise((resolve) => {
-    execFile("git", args, { timeout: 5000 }, (err, stdout) => resolve(err ? null : stdout));
+    execFile("git", [...GIT_SAFE, ...args], { timeout: 5000 }, (err, stdout) => resolve(err ? null : stdout));
   });
 }
 
@@ -36,7 +40,11 @@ function git(args) {
 async function defaultWorktreeStatus(path) {
   const top = await git(["-C", path, "rev-parse", "--show-toplevel"]);
   if (top === null) return { error: "git could not read it" };
-  if (realpathSync(top.trim()) !== realpathSync(path)) return { error: "is not a git worktree of its own" };
+  try {
+    if (realpathSync(top.replace(/\n$/, "")) !== realpathSync(path)) return { error: "is not a git worktree of its own" };
+  } catch {
+    return { error: "git could not read it" }; // removed meanwhile
+  }
   const status = await git(["-C", path, "status", "--porcelain"]);
   if (status === null) return { error: "git could not read it" };
   return { dirty: status.trim().length > 0 };
@@ -114,11 +122,21 @@ export function createStarter(deps) {
     const id = `${project.key}#${number}`;
     if (locks.has(id)) return { status: 429, body: { error: `#${number} is already starting` } };
     // Held from the session check to the record write, here and across every server on this machine.
-    const release = lockIssue(dir, project.key, number, now());
+    let release;
+    try {
+      release = lockIssue(dir, project.key, number, now());
+    } catch (e) {
+      return recordsUnreadable(e);
+    }
     if (!release) return { status: 429, body: { error: `#${number} is already starting (another mission control on this machine)` } };
     locks.add(id);
     try {
-      const sessions = (await listSessions(dir, project.key, { now: now(), alive })).filter((s) => s.number === number);
+      let sessions;
+      try {
+        sessions = (await listSessions(dir, project.key, { now: now(), alive })).filter((s) => s.number === number);
+      } catch (e) {
+        return recordsUnreadable(e);
+      }
       // A live session is refused outright, confirm or not: a second one would work in the same worktree.
       const live = sessions.find(isLive);
       if (live) {
@@ -196,6 +214,11 @@ export function createStarter(deps) {
   }
 
   return { start, sessionsFor, ghosttyArgv, launcher };
+}
+
+/** Without the records, a running session cannot be ruled out: refuse, and say why. */
+function recordsUnreadable(e) {
+  return { status: 503, body: { error: `session records could not be read (${e?.code ?? "error"}), so a running session cannot be ruled out; not starting`, reason: "sessions" } };
 }
 
 /** One sentence on how an undo went, for the refusal. A failed undo says what to fix by hand. */

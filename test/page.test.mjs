@@ -122,7 +122,7 @@ test("page: a restarted server is detected from the run id, and the notice offer
 
 test("page: Start is off while the board is stale, the server is silent, or the nonce is dead", () => {
   assert.match(js, /function startBlocked\(\) \{\s*if \(restarted\)[^\n]*\n\s*if \(failure\?\.kind === "unreachable"\)[^\n]*\n\s*if \(failure\)[^\n]*no board data[^\n]*\n\s*if \(board\?\.stale\)/);
-  assert.match(js, /const blocked = startBlocked\(\) \?\? \(live \? "A session for this issue is running on this machine\." : null\);\s*actions\.append\(el\("button", \{[^\n]*?disabled: Boolean\(blocked\), title: blocked, onclick: \(e\) => startIssue/);
+  assert.match(js, /const blocked = startBlocked\(\) \?\? \(live \? "A session for this issue is running on this machine\." : b\.start\.sessionsError \? "[^"]*" : null\);\s*actions\.append\(el\("button", \{[^\n]*?disabled: Boolean\(blocked\), title: blocked, onclick: \(e\) => startIssue/);
   assert.match(js, /app\.classList\.toggle\("stale", Boolean\(startBlocked\(\)\)\)/, "and the bands say so");
   assert.match(js, /b\.ageSeconds \+ Math\.round\(\(Date\.now\(\) - receivedAt\) \/ 1000\)/, "the age keeps counting on the page");
 });

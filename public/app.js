@@ -408,7 +408,7 @@ function stagedCard(number, b) {
     const label = reasons.length ? `${reasons.join(" · ")} · start anyway?` : `Start #${number}`;
     // With the opt-in claim, Start writes to GitHub before it launches: say so on the card, not only in the README.
     if (b.start.claim) box.append(el("div", { class: "sub", text: `Start assigns you and sets Status to ${b.start.claim.status} on GitHub, then opens the session.` }));
-    const blocked = startBlocked() ?? (live ? "A session for this issue is running on this machine." : null);
+    const blocked = startBlocked() ?? (live ? "A session for this issue is running on this machine." : b.start.sessionsError ? "Session records could not be read, so a running session cannot be ruled out." : null);
     actions.append(el("button", { type: "button", class: `btn ${reasons.length ? "btn-warn" : "btn-primary"}`, text: label, disabled: Boolean(blocked), title: blocked, onclick: (e) => startIssue(number, e.currentTarget, confirm) }));
   } else if (ready) {
     actions.append(el("button", { type: "button", class: "btn btn-primary", text: "Copy prompt", onclick: () => copyLine(l.copy) }));

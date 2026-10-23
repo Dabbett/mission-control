@@ -136,7 +136,12 @@ export function lockIssue(dir, key, number, now = Date.now()) {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       mkdirSync(path);
-      writeFileSync(join(path, "owner"), token);
+      try {
+        writeFileSync(join(path, "owner"), token);
+      } catch (e) {
+        rmSync(path, { recursive: true, force: true });
+        throw e;
+      }
       // Only the holder removes it: a Start that outlived LOCK_STALE_MS must not remove a lock taken over since.
       return () => {
         let owner = null;
