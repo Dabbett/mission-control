@@ -82,7 +82,7 @@ test("page: only a Ready leaf with a command is draggable; others say why", () =
 });
 
 test("page: switching projects empties the Workbench", () => {
-  assert.match(js, /sel\.addEventListener\("change", \(\) => \{[\s\S]{0,400}staged\.length = 0;\s*startErrors\.clear\(\);\s*board = null;\s*failure = null;\s*clear\(document\.getElementById\("workbench"\)\);/, "old cards leave the screen at once");
+  assert.match(js, /sel\.addEventListener\("change", \(\) => \{[\s\S]{0,400}staged\.length = 0;\s*startErrors\.clear\(\);\s*dirtyWorktrees\.clear\(\);\s*board = null;\s*failure = null;\s*clear\(document\.getElementById\("workbench"\)\);/, "old cards leave the screen at once");
   assert.match(js, /clear\(document\.getElementById\("hud-hero"\)\);\s*clear\(document\.getElementById\("hud-meta"\)\);\s*const app = document\.getElementById\("app"\);\s*clear\(app\);/, "so do the old bands and totals");
   assert.match(js, /if \(asked !== projectKey\) return;/, "a late answer for the old project is dropped");
 });
@@ -110,7 +110,7 @@ test("page: Start lives only on a Ready staged card, next to the prose-dependenc
   assert.match(js, /function stagedCard[\s\S]*?const ready = l && l\.state === "ready" && l\.copy;[\s\S]*?No blocking edges on the board\.[\s\S]*?if \(ready && b\.start\?\.enabled && !unlisted\)/);
   assert.match(js, /const unlisted = ready && l\.statusKnown === false;/, "no Start for a Status the config does not list; Copy stays");
   assert.match(js, /MANY_RUNNING = 2/);
-  assert.match(js, /const running = b\.start\?\.running \?\? 0;\s*if \(running >= MANY_RUNNING\)/, "the warning counts sessions running now, not starts");
+  assert.match(js, /const running = b\.start\?\.running \?\? 0;\s*if \(b\.start\?\.sessionsError\)[^\n]*\n\s*if \(running >= MANY_RUNNING\)/, "the warning counts sessions running now, not starts");
 });
 
 test("page: a restarted server is detected from the run id, and the notice offers a reload", () => {

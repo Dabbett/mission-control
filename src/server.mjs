@@ -158,6 +158,7 @@ export function createApp(deps) {
         // The newest session record per issue number (ADR 0003), and how many run on this machine now.
         sessions: sessions?.byNumber ?? {},
         running: sessions?.running ?? 0,
+        sessionsError: sessions?.error ?? null,
         // With the opt-in claim, the page says what Start will write before anyone presses it.
         claim: project.start.claim === "dashboard" ? { status: claimStatusName(project) } : null,
       },
@@ -275,7 +276,16 @@ export function createApp(deps) {
           json(res, 502, { error: st.lastError ?? "no board data", project: { key: project.key, title: project.title }, runId });
           return done(502);
         }
-        json(res, 200, boardResponse(project, st, refused, starter && project.start.enabled ? await starter.sessionsFor(project.key) : null));
+        // The records are extra data: an unreadable state dir must not take the board down. Start still fails closed.
+        let sessions = null;
+        if (starter && project.start.enabled) {
+          try {
+            sessions = await starter.sessionsFor(project.key);
+          } catch (e) {
+            sessions = { byNumber: {}, running: 0, error: `session records could not be read (${e?.code ?? "error"})` };
+          }
+        }
+        json(res, 200, boardResponse(project, st, refused, sessions));
         return done(200);
       }
       if (req.method === "POST" && url.pathname === "/api/start") {

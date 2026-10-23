@@ -1,6 +1,6 @@
 // Opt-in Start: opens a new Ghostty window running the launcher, which runs claude. No shell anywhere.
 import { execFile } from "node:child_process";
-import { rmSync, statSync } from "node:fs";
+import { realpathSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { argvFor, modelFor } from "./prompt.mjs";
 import { issueView, LEAF } from "./model.mjs";
@@ -25,14 +25,21 @@ function defaultLaunch(argv, { env }) {
   });
 }
 
-/** `git status` of a leftover worktree: { dirty } or { error }. execFile, no shell. */
-function defaultWorktreeStatus(path) {
+function git(args) {
   return new Promise((resolve) => {
-    execFile("git", ["-C", path, "status", "--porcelain"], { timeout: 5000 }, (err, stdout) => {
-      if (err) resolve({ error: "git could not read it" });
-      else resolve({ dirty: stdout.trim().length > 0 });
-    });
+    execFile("git", args, { timeout: 5000 }, (err, stdout) => resolve(err ? null : stdout));
   });
+}
+
+/** `git status` of a leftover worktree: { dirty } or { error }. execFile, no shell. A plain folder is not read
+ *  through the checkout around it: git would search upward and report the main checkout's changes instead. */
+async function defaultWorktreeStatus(path) {
+  const top = await git(["-C", path, "rev-parse", "--show-toplevel"]);
+  if (top === null) return { error: "git could not read it" };
+  if (realpathSync(top.trim()) !== realpathSync(path)) return { error: "is not a git worktree of its own" };
+  const status = await git(["-C", path, "status", "--porcelain"]);
+  if (status === null) return { error: "git could not read it" };
+  return { dirty: status.trim().length > 0 };
 }
 
 /** The worktree `claude -w <name>` uses: <localPath>/.claude/worktrees/<name>. Null when the command names none. */
@@ -172,7 +179,7 @@ export function createStarter(deps) {
         createRecord(rec.path, { v: 1, key: project.key, number, sessionId: rec.sessionId, launchedAt: at, cwd: project.localPath });
       } catch (e) {
         const undo = plan ? await claimer.unclaim(plan.ctx, plan.undo) : null;
-        return { status: 500, body: { error: `could not write the session record: ${e.code ?? "error"}${undo ? `.${undoNote(undo, true)}` : ""}. Nothing was launched.` } };
+        return { status: 500, body: { error: `could not write the session record: ${e.code ?? "error"}.${undo ? undoNote(undo, true) : ""} Nothing was launched.` } };
       }
       try {
         await launch(argv, { env: childEnv() });
