@@ -8,6 +8,9 @@
 // such as -cp carries -p.
 export const DANGEROUS_FLAGS = /^(--(allow-)?dangerously-skip-permissions|--permission-mode(=.*)?|-[a-zA-Z]*p[a-zA-Z]*|--print|--allowedTools(=.*)?|--allowed-tools(=.*)?|--settings(=.*)?|--setting-sources(=.*)?)$/;
 
+// Flags that pick the session: Start gives every session a new id (ADR 0003), so none of these may come from config.
+export const SESSION_FLAGS = /^(--session-id(=.*)?|-c|--continue|-r|--resume(=.*)?|--fork-session)$/;
+
 /** The first dangerous flag in an argv array, or null. */
 export function dangerousFlag(argv) {
   return argv.find((a) => DANGEROUS_FLAGS.test(a)) ?? null;

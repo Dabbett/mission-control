@@ -10,12 +10,13 @@ import { spawn } from "node:child_process";
 import { existsSync, readSync, statSync } from "node:fs";
 import { constants } from "node:os";
 import { isAbsolute } from "node:path";
-import { dangerousFlag } from "../src/claude-flags.mjs";
+import { dangerousFlag, SESSION_FLAGS } from "../src/claude-flags.mjs";
 import { readRecord, writeRecord } from "../src/sessions.mjs";
 
 const BILLING_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"];
-// After the window closes, claude gets this long to exit before the launcher records the end without it.
-const HANGUP_GRACE_MS = 10_000;
+// After a hang-up, claude gets this long to exit before the launcher kills it, so a recorded end is a real end.
+// MC_HANGUP_GRACE_MS shortens it for the tests; the server's allowlisted environment never carries it.
+const HANGUP_GRACE_MS = Number(process.env.MC_HANGUP_GRACE_MS) > 0 ? Number(process.env.MC_HANGUP_GRACE_MS) : 10_000;
 
 let recordPath = null;
 let record = null;
@@ -72,7 +73,8 @@ if (command !== "claude") fail(`only the claude command may be launched, got: ${
 const rest = args.slice(6);
 const bad = dangerousFlag(rest);
 if (bad) fail(`refusing ${bad}: a session started from the dashboard must ask before it acts`);
-if (rest.some((a) => a === "--session-id" || a.startsWith("--session-id="))) fail("refusing --session-id: the launcher sets it from the session record");
+const own = rest.find((a) => SESSION_FLAGS.test(a));
+if (own) fail(`refusing ${own}: every session from the dashboard is a new one, with the id from its record`);
 // Names only, never values: a key must not end up on screen.
 const billing = BILLING_ENV.filter((k) => process.env[k]);
 if (billing.length) {
@@ -83,18 +85,20 @@ const child = spawn("claude", ["--session-id", record.sessionId, ...rest], { cwd
 // Ctrl-C and Ctrl-\ reach claude too, which decides what they mean; the launcher waits for it either way.
 for (const sig of ["SIGINT", "SIGQUIT"]) process.on(sig, () => {});
 // A closed window hangs up the launcher and claude together. Wait for claude, so the end is recorded with its status.
+let killedAfter = null;
 for (const sig of ["SIGHUP", "SIGTERM"]) {
   process.on(sig, () => {
     child.kill(sig);
+    // A claude that ignores the signal is killed, and the end is recorded from its exit, never before it.
     setTimeout(() => {
-      recordEnd(null, sig, `the window closed and claude did not exit within ${HANGUP_GRACE_MS / 1000} s`);
-      process.exit(129);
+      killedAfter = sig;
+      child.kill("SIGKILL");
     }, HANGUP_GRACE_MS).unref();
   });
 }
 child.on("error", (e) => fail(e.code === "ENOENT" ? "claude is not on PATH in this terminal" : e.message, e.code === "ENOENT" ? 127 : 1));
 child.on("exit", (code, signal) => {
-  recordEnd(code, signal);
+  recordEnd(code, signal, killedAfter ? `killed: claude did not exit within ${HANGUP_GRACE_MS / 1000} s of ${killedAfter}` : undefined);
   if (signal) process.exit(128 + (constants.signals[signal] ?? 1));
   if (code !== 0) {
     process.stderr.write(`\nclaude exited with status ${code}.\n`);

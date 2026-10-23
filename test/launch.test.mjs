@@ -106,8 +106,9 @@ test("launch: a refusal is written into the record, so the dashboard shows why",
   const billing = withRecord(dir, "claude");
   run(billing, { ANTHROPIC_API_KEY: "value-should-not-appear" });
   assert.ok(!readFileSync(billing[3], "utf8").includes("value-should-not-appear"));
-  const own = withRecord(dir, "claude", "--session-id", "x");
-  assert.match(run(own).stderr, /refusing --session-id/);
+  for (const flag of ["--session-id", "-c", "--resume", "--fork-session"]) {
+    assert.match(run(withRecord(dir, "claude", flag, "x")).stderr, new RegExp(`refusing ${flag}: every session from the dashboard is a new one`), flag);
+  }
 });
 
 test("launch: a record that is not one, or was already taken, is refused before claude runs", () => {
@@ -151,4 +152,26 @@ test("launch: a missing claude binary is reported, not swallowed", () => {
   assert.equal(r.status, 127);
   assert.match(r.stderr, /not on PATH/);
   assert.equal(recordIn(args).exitCode, 127);
+});
+
+test("launch: a claude that ignores the hang-up is killed after the grace period, and only then recorded", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mc-launch-"));
+  const bin = join(dir, "bin");
+  spawnSync("mkdir", ["-p", bin]);
+  const ready = join(dir, "ready");
+  writeFileSync(join(bin, "claude"), `#!${process.execPath}\nprocess.on("SIGHUP", () => {});\nrequire("fs").writeFileSync(${JSON.stringify(ready)}, String(process.pid));\nsetInterval(() => {}, 1000);\n`);
+  chmodSync(join(bin, "claude"), 0o755);
+  const args = withRecord(dir, "claude");
+  const child = spawn(process.execPath, [launcher, ...args], { env: baseEnv({ PATH: `${bin}:${process.env.PATH}`, MC_HANGUP_GRACE_MS: "300" }), stdio: "ignore" });
+  for (let i = 0; i < 100 && !existsSync(ready); i++) await new Promise((r) => setTimeout(r, 50));
+  const claudePid = Number(readFileSync(ready, "utf8"));
+  const code = await new Promise((resolve) => {
+    child.on("exit", (c) => resolve(c));
+    child.kill("SIGHUP");
+  });
+  assert.equal(code, 137, "128 + SIGKILL");
+  const rec = recordIn(args);
+  assert.equal(rec.signal, "SIGKILL");
+  assert.match(rec.note, /killed: claude did not exit within 0\.3 s of SIGHUP/);
+  assert.throws(() => process.kill(claudePid, 0), /ESRCH/, "claude is gone when the end is recorded");
 });

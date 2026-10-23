@@ -161,10 +161,12 @@ test("validation refuses line breaks where Start would pass them as one argument
   assert.throws(() => validateProject(base({ localPath: "~/some\nwhere" })), /localPath must not contain a line break/);
 });
 
-test("validation: command must not set --session-id; Start gives every session its own", () => {
-  assert.throws(() => validateProject(base({ command: ["claude", "--session-id", "x", "{prompt}"] })), /command\[1\] must not set --session-id/);
-  assert.throws(() => validateProject(base({ command: ["claude", "--session-id=x", "{prompt}"] })), /must not set --session-id/);
+test("validation: command must not pick the session; Start gives every session a new id", () => {
+  for (const flag of ["--session-id", "--session-id=x", "-c", "--continue", "-r", "--resume", "--resume=abc", "--fork-session"]) {
+    assert.throws(() => validateProject(base({ command: ["claude", flag, "{prompt}"] })), new RegExp(`command\\[1\\] must not pick the session \\(${flag.replace(/[-=]/g, "\\$&")}\\)`), flag);
+  }
   assert.doesNotThrow(() => validateProject(base({ command: ["claude", "--name", "{key}#{number}", "{prompt}"] })));
+  assert.doesNotThrow(() => validateProject(base({ command: ["sh", "-c", "{prompt}"] })), "only a claude command's flags mean that");
 });
 
 test("validation: {title} is a prompt placeholder only, and command must carry {prompt}", () => {

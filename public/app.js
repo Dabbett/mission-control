@@ -423,6 +423,7 @@ function renderWorkbench(b) {
   const head = el("div", { class: "wb-head" }, el("h2", { text: "Workbench" }));
   if (!b.start?.enabled) head.append(el("span", { class: "sub", text: "Start is off: copy the prompt instead (start.enabled in the project config)" }));
   const running = b.start?.running ?? 0;
+  if (b.start?.sessionsError) head.append(chip(`${b.start.sessionsError}: running sessions are not shown`, "warn"));
   if (running >= MANY_RUNNING) head.append(chip(`${running} sessions running on this machine; each one is a full Claude session`, "warn"));
   const body = el("div", { class: "wb-body" });
   for (const n of staged) body.append(stagedCard(n, b));
@@ -638,6 +639,7 @@ async function initProjects() {
         // Issue numbers are per repo: a staged #130 must not reappear as another project's #130.
         staged.length = 0;
         startErrors.clear();
+        dirtyWorktrees.clear();
         board = null;
         failure = null;
         clear(document.getElementById("workbench"));

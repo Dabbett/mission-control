@@ -564,3 +564,36 @@ test("server start: the board lists the newest session per issue and counts the 
   assert.equal(refused.json.reason, "running");
   assert.equal(launches.length, 1);
 });
+
+test("start: a plain folder where the worktree should be is not read through the checkout around it", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "mc-repo-"));
+  assert.equal(spawnSync("git", ["-C", repo, "init", "-q"]).status, 0);
+  writeFileSync(join(repo, "main-checkout-change.txt"), "x"); // the checkout around it is dirty
+  const wt = join(repo, ".claude", "worktrees", "issue-6");
+  mkdirSync(wt, { recursive: true });
+  const r = await starter().s.start({ ...example, localPath: repo }, 6, { normalized });
+  assert.deepEqual(r.body.requiresConfirm, ["worktree"]);
+  assert.match(r.body.error, /has a worktree at .*issue-6 that is not a git worktree of its own/);
+});
+
+test("server start: an unreadable session dir leaves the board up and says so", async (t) => {
+  const s = { start: async () => ({ status: 500, body: {} }), sessionsFor: async () => { throw Object.assign(new Error("x"), { code: "EACCES" }); } };
+  const a = createApp({ projects, fetchBoard: async () => fixtureBoard(), starter: s });
+  const port = await a.listen(0);
+  t.after(() => a.close());
+  const b = await http(port, "/api/board?project=example");
+  assert.equal(b.status, 200);
+  assert.deepEqual(b.json.start.sessions, {});
+  assert.equal(b.json.start.sessionsError, "session records could not be read (EACCES)");
+});
+
+test("start: a lock is removed only by its holder", () => {
+  const dir = stateDir();
+  const releaseOld = lockIssue(dir, "example", 8, 1_700_000_000_000);
+  const releaseNew = lockIssue(dir, "example", 8, Date.now() + 10 * 60_000); // took the stale lock over
+  assert.ok(releaseNew);
+  releaseOld(); // the first Start finally finishes
+  assert.equal(lockIssue(dir, "example", 8, Date.now()), null, "the new holder's lock survived");
+  releaseNew();
+  assert.ok(lockIssue(dir, "example", 8, Date.now()));
+});

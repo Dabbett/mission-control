@@ -66,7 +66,7 @@ export function launcherAlive(record) {
     } catch (e) {
       if (e.code !== "EPERM") return resolve(false);
     }
-    execFile("ps", ["-o", "command=", "-p", String(record.pid)], { timeout: 2000 }, (err, stdout) => {
+    execFile("ps", ["-ww", "-o", "command=", "-p", String(record.pid)], { timeout: 2000 }, (err, stdout) => {
       if (err) return resolve(err.code !== 1); // ps exits 1 when the pid is gone
       resolve(stdout.includes(record.sessionId));
     });
@@ -102,21 +102,22 @@ export async function listSessions(dir, key, { now = Date.now(), alive = launche
     if (e.code === "ENOENT") return [];
     throw e;
   }
-  const out = [];
+  const records = [];
   for (const name of names) {
     const m = name.match(RECORD_RE);
     if (!m || m[1] !== key) continue;
     const path = join(dir, name);
     const record = readRecord(path);
-    if (!record) continue;
-    const state = await stateOf(record, { now, alive });
-    const last = Date.parse(record.exitedAt ?? record.startedAt ?? record.launchedAt);
-    if (!LIVE.has(state) && now - last > KEEP_DAYS * 86_400_000) {
-      rmSync(path, { force: true });
-      continue;
-    }
-    out.push({ number: record.number, ...summary(record, state) });
+    if (record) records.push({ path, record });
   }
+  // In parallel: each live pid costs a `ps`, and the board waits for all of them.
+  const states = await Promise.all(records.map(({ record }) => stateOf(record, { now, alive })));
+  const out = [];
+  records.forEach(({ path, record }, i) => {
+    const last = Date.parse(record.exitedAt ?? record.startedAt ?? record.launchedAt);
+    if (!LIVE.has(states[i]) && now - last > KEEP_DAYS * 86_400_000) rmSync(path, { force: true });
+    else out.push({ number: record.number, ...summary(record, states[i]) });
+  });
   return out.sort((a, b) => Date.parse(b.launchedAt) - Date.parse(a.launchedAt));
 }
 
@@ -131,10 +132,19 @@ export function isLive(session) {
 export function lockIssue(dir, key, number, now = Date.now()) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const path = join(dir, `${key}-${number}.lock`);
+  const token = randomUUID();
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       mkdirSync(path);
-      return () => rmSync(path, { recursive: true, force: true });
+      writeFileSync(join(path, "owner"), token);
+      // Only the holder removes it: a Start that outlived LOCK_STALE_MS must not remove a lock taken over since.
+      return () => {
+        let owner = null;
+        try {
+          owner = readFileSync(join(path, "owner"), "utf8");
+        } catch {}
+        if (owner === token) rmSync(path, { recursive: true, force: true });
+      };
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
       let age;
