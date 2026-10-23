@@ -9,7 +9,8 @@
 export const DANGEROUS_FLAGS = /^(--(allow-)?dangerously-skip-permissions|--permission-mode(=.*)?|-[a-zA-Z]*p[a-zA-Z]*|--print|--allowedTools(=.*)?|--allowed-tools(=.*)?|--settings(=.*)?|--setting-sources(=.*)?)$/;
 
 // Flags that pick the session: Start gives every session a new id (ADR 0003), so none of these may come from config.
-export const SESSION_FLAGS = /^(--session-id(=.*)?|-c|--continue|-r|--resume(=.*)?|--fork-session)$/;
+// As with -p above, a cluster such as -cw carries -c, and -rabc is -r with its value glued on.
+export const SESSION_FLAGS = /^(--session-id(=.*)?|-[a-zA-Z]*[cr][a-zA-Z]*(=.*)?|--continue|--resume(=.*)?|--fork-session)$/;
 
 /** The first dangerous flag in an argv array, or null. */
 export function dangerousFlag(argv) {

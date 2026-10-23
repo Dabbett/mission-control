@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { createStarter, childEnv, CHILD_ENV_KEYS, worktreePath } from "../src/start.mjs";
@@ -596,4 +596,16 @@ test("start: a lock is removed only by its holder", () => {
   assert.equal(lockIssue(dir, "example", 8, Date.now()), null, "the new holder's lock survived");
   releaseNew();
   assert.ok(lockIssue(dir, "example", 8, Date.now()));
+});
+
+test("start: unreadable session records refuse Start with the reason, not an internal error", { skip: process.getuid?.() === 0 }, async (t) => {
+  const dir = stateDir();
+  const { s, launches } = starter({ stateDir: dir });
+  chmodSync(dir, 0o300); // no read: readdir fails, as on a broken state dir
+  t.after(() => chmodSync(dir, 0o700));
+  const r = await s.start(example, 6, { normalized });
+  assert.equal(r.status, 503);
+  assert.equal(r.body.reason, "sessions");
+  assert.match(r.body.error, /session records could not be read \(EACCES\), so a running session cannot be ruled out; not starting/);
+  assert.equal(launches.length, 0);
 });

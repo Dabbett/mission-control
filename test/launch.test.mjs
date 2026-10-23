@@ -106,7 +106,7 @@ test("launch: a refusal is written into the record, so the dashboard shows why",
   const billing = withRecord(dir, "claude");
   run(billing, { ANTHROPIC_API_KEY: "value-should-not-appear" });
   assert.ok(!readFileSync(billing[3], "utf8").includes("value-should-not-appear"));
-  for (const flag of ["--session-id", "-c", "--resume", "--fork-session"]) {
+  for (const flag of ["--session-id", "-c", "-cw", "-rabc", "--resume", "--fork-session"]) {
     assert.match(run(withRecord(dir, "claude", flag, "x")).stderr, new RegExp(`refusing ${flag}: every session from the dashboard is a new one`), flag);
   }
 });

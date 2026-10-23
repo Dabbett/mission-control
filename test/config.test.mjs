@@ -162,7 +162,7 @@ test("validation refuses line breaks where Start would pass them as one argument
 });
 
 test("validation: command must not pick the session; Start gives every session a new id", () => {
-  for (const flag of ["--session-id", "--session-id=x", "-c", "--continue", "-r", "--resume", "--resume=abc", "--fork-session"]) {
+  for (const flag of ["--session-id", "--session-id=x", "-c", "-cw", "--continue", "-r", "-rabc", "--resume", "--resume=abc", "--fork-session"]) {
     assert.throws(() => validateProject(base({ command: ["claude", flag, "{prompt}"] })), new RegExp(`command\\[1\\] must not pick the session \\(${flag.replace(/[-=]/g, "\\$&")}\\)`), flag);
   }
   assert.doesNotThrow(() => validateProject(base({ command: ["claude", "--name", "{key}#{number}", "{prompt}"] })));
@@ -204,7 +204,7 @@ test("validation: unknown keys inside status, start, model, layers, groups and p
 });
 
 test("validation: with Start on, flags that take the human out of the session are refused; with Start off, Copy stays free", () => {
-  for (const flag of ["--dangerously-skip-permissions", "--permission-mode", "--permission-mode=bypassPermissions", "-p", "--print", "--allowedTools", "--allowedTools=Bash", "--settings", "--settings={}", "--setting-sources", "--setting-sources=project", "--allow-dangerously-skip-permissions", "-cp", "-pc"]) {
+  for (const flag of ["--dangerously-skip-permissions", "--permission-mode", "--permission-mode=bypassPermissions", "-p", "--print", "--allowedTools", "--allowedTools=Bash", "--settings", "--settings={}", "--setting-sources", "--setting-sources=project", "--allow-dangerously-skip-permissions", "-dp", "-pd"]) {
     assert.throws(() => validateProject(base({ start: { enabled: true }, command: ["claude", flag, "{prompt}"] })), /takes the human out of the session/, flag);
     assert.doesNotThrow(() => validateProject(base({ command: ["claude", flag, "{prompt}"] })), `${flag} with Start off`);
   }
